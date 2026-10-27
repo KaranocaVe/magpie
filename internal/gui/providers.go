@@ -78,6 +78,7 @@ type providerJSON struct {
 	Host      string            `json:"host"`
 	Chat      string            `json:"chat"`
 	Responses string            `json:"responses"`
+	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
 	Anthropic string            `json:"anthropic"`
 	Gemini    string            `json:"gemini,omitempty"` // a Gemini API's base (#1346)
 	Decide    string            `json:"decide,omitempty"` // a decision API: it only routes groups
@@ -595,7 +596,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string]string) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
+		Chat: p.Chat, Responses: p.Responses, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
@@ -1241,6 +1242,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// as Codex sent it (provider.Provider.NativeCompaction); a save
 			// that leaves it out keeps it
 			NativeCompaction *bool `json:"nativeCompaction"`
+			// AllowCrossProviderSealedTasks is an explicit per-provider opt-in;
+			// a save that leaves it out keeps the existing value.
+			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
 			// AuthHeader, for save: which header the key goes in on a
 			// third-party Anthropic API (provider.Provider.AuthHeader); a
 			// save that leaves it out keeps it, one learned too
@@ -1301,6 +1305,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		if req.NativeCompaction != nil {
 			in.NativeCompaction = *req.NativeCompaction
+		}
+		if req.AllowCrossProviderSealedTasks != nil {
+			in.AllowCrossProviderSealedTasks = *req.AllowCrossProviderSealedTasks
 		}
 		if req.AuthHeader != nil {
 			in.AuthHeader = *req.AuthHeader
@@ -1388,6 +1395,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.PinUpstream = in.PinUpstream
 				pr.Unredacted = in.Unredacted
 				pr.NativeCompaction = in.NativeCompaction
+				pr.AllowCrossProviderSealedTasks = in.AllowCrossProviderSealedTasks
 				pr.PassUserAgent = in.PassUserAgent
 				pr.AuthHeader = in.AuthHeader
 				// and what its editor sets beside them: how requests spread
@@ -1640,6 +1648,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					}
 					if req.NativeCompaction == nil {
 						in.NativeCompaction = old.NativeCompaction
+					}
+					if req.AllowCrossProviderSealedTasks == nil {
+						in.AllowCrossProviderSealedTasks = old.AllowCrossProviderSealedTasks
 					}
 					if req.AuthHeader == nil {
 						in.AuthHeader = old.AuthHeader

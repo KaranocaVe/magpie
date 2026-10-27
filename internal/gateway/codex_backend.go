@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -368,35 +367,15 @@ func (s *Server) sealedReader(p provider.Provider, model string, sealers []strin
 	return false
 }
 
-// sameSealingBackend reports whether two Responses provider entries are known
-// to share the backend that seals and opens Codex's encrypted agent tasks.
-// Equal non-empty SealGroup values are an explicit operator assertion. Without
-// that opt-in, URL equality alone is not enough: automatic matching also
-// requires the same API key and matching request/auth routing configuration.
+// sameSealingBackend reports whether two Responses provider entries are explicitly
+// declared compatible with the same sealed Codex subagent payloads. Matching
+// SealGroup values are a precise declaration; alternatively, both providers
+// can opt in. Equal URLs or API keys alone never establish compatibility.
 func sameSealingBackend(a, b provider.Provider) bool {
 	if group := strings.TrimSpace(a.SealGroup); group != "" && group == strings.TrimSpace(b.SealGroup) {
 		return true
 	}
-	if a.Responses == "" || b.Responses == "" ||
-		strings.TrimRight(a.Responses, "/") != strings.TrimRight(b.Responses, "/") {
-		return false
-	}
-	// A provider with multiple keys can choose a different tenant/key on the
-	// next request. Do not infer cross-provider compatibility for that case.
-	if a.Key == "" || a.Key != b.Key || len(a.Keys) != 0 || len(b.Keys) != 0 {
-		return false
-	}
-	return a.Preset == b.Preset &&
-		a.BaseAPI == b.BaseAPI &&
-		a.KeyProtocol == b.KeyProtocol &&
-		a.KeyPlan == b.KeyPlan &&
-		a.AuthHeader == b.AuthHeader &&
-		a.Proxy == b.Proxy &&
-		a.InsecureTLS == b.InsecureTLS &&
-		a.PassUserAgent == b.PassUserAgent &&
-		reflect.DeepEqual(a.Headers, b.Headers) &&
-		reflect.DeepEqual(a.ExtraBody, b.ExtraBody) &&
-		reflect.DeepEqual(a.AccountProxies, b.AccountProxies)
+	return a.AllowCrossProviderSealedTasks && b.AllowCrossProviderSealedTasks
 }
 
 // sealedReaders keeps of cands those that can read a sealed subagent task,

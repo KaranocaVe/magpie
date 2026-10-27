@@ -92,10 +92,12 @@ type Provider struct {
 	// value can open each other's sealed Codex subagent tasks. Set it only when the
 	// upstreams share a sealing/decryption backend; it is an operator assertion.
 	SealGroup string `json:"sealGroup,omitempty"`
+
 	// AllowCrossProviderSealedTasks opts this provider into sharing sealed Codex
 	// subagent tasks with other providers that also opt in. Enable it only when
 	// they share a sealing/decryption backend; both providers must opt in.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
+
 	Anthropic string `json:"anthropic,omitempty"`
 	// Gemini is the base of Google's Gemini API, or of one that answers as
 	// it does (…/v1beta): models/{model}:streamGenerateContent is asked

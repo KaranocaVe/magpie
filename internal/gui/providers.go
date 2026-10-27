@@ -78,7 +78,6 @@ type providerJSON struct {
 	Host      string            `json:"host"`
 	Chat      string            `json:"chat"`
 	Responses string            `json:"responses"`
-	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
 	Anthropic string            `json:"anthropic"`
 	Gemini    string            `json:"gemini,omitempty"` // a Gemini API's base (#1346)
 	Decide    string            `json:"decide,omitempty"` // a decision API: it only routes groups
@@ -263,6 +262,9 @@ type providerJSON struct {
 	// Move is where a built-in subscription stands with the community
 	// plugin that can run it (provider.Move): set for those that have one
 	Move *moveJSON `json:"move,omitempty"`
+
+	// AllowCrossProviderSealedTasks is the provider editor's explicit opt-in.
+	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
 }
 
 type moveJSON struct {
@@ -1242,9 +1244,6 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// as Codex sent it (provider.Provider.NativeCompaction); a save
 			// that leaves it out keeps it
 			NativeCompaction *bool `json:"nativeCompaction"`
-			// AllowCrossProviderSealedTasks is an explicit per-provider opt-in;
-			// a save that leaves it out keeps the existing value.
-			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
 			// AuthHeader, for save: which header the key goes in on a
 			// third-party Anthropic API (provider.Provider.AuthHeader); a
 			// save that leaves it out keeps it, one learned too
@@ -1285,6 +1284,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NoModels, for save: the editor's Select none, kept with no
 			// model picked (#1818); a save that leaves it out keeps it
 			NoModels *bool `json:"noModels"`
+
+			// AllowCrossProviderSealedTasks is an explicit per-provider opt-in;
+			// a save that leaves it out keeps the existing value.
+			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			fail(rw, err)

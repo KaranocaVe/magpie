@@ -369,10 +369,14 @@ func (s *Server) sealedReader(p provider.Provider, model string, sealers []strin
 
 // sameSealingBackend reports whether two Responses provider entries are explicitly
 // declared compatible with the same sealed Codex subagent payloads. Matching
-// SealGroup values are a precise declaration; alternatively, both providers
-// can opt in. Equal URLs or API keys alone never establish compatibility.
+// SealGroup values are a precise declaration; providers both marked as routing
+// to the official OpenAI Codex backend share that final decryption backend;
+// alternatively, both can opt in generically. URLs and API keys alone are not proof.
 func sameSealingBackend(a, b provider.Provider) bool {
 	if group := strings.TrimSpace(a.SealGroup); group != "" && group == strings.TrimSpace(b.SealGroup) {
+		return true
+	}
+	if a.RoutesToOfficialCodexBackend && b.RoutesToOfficialCodexBackend {
 		return true
 	}
 	return a.AllowCrossProviderSealedTasks && b.AllowCrossProviderSealedTasks

@@ -98,6 +98,11 @@ type Provider struct {
 	// they share a sealing/decryption backend; both providers must opt in.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
 
+	// RoutesToOfficialCodexBackend asserts that this provider's upstream chain
+	// ultimately reaches OpenAI's official Codex backend, which can open its
+	// sealed subagent tasks across otherwise distinct shallow providers.
+	RoutesToOfficialCodexBackend bool `json:"routesToOfficialCodexBackend,omitempty"`
+
 	Anthropic string `json:"anthropic,omitempty"`
 	// Gemini is the base of Google's Gemini API, or of one that answers as
 	// it does (…/v1beta): models/{model}:streamGenerateContent is asked

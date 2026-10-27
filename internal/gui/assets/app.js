@@ -7767,7 +7767,7 @@ function advancedSet(d, p) {
   return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() ||
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) ||
     [d.concurrency, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
-    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.pinUpstream || d.nativeCompaction || d.allowCrossProviderSealedTasks || d.balanceToken || d.limitRestOff) ||
+    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.pinUpstream || d.nativeCompaction || d.allowCrossProviderSealedTasks || d.routesToOfficialCodexBackend || d.balanceToken || d.limitRestOff) ||
     !!d.fallback?.length || !!p?.balanceToken?.set;
 }
 function priceRateError(ed) {
@@ -8885,7 +8885,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, limitRestOff: !!p.limitRestOff, nativeCompaction: !!p.nativeCompaction, allowCrossProviderSealedTasks: !!p.allowCrossProviderSealedTasks, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, limitRestOff: !!p.limitRestOff, nativeCompaction: !!p.nativeCompaction, allowCrossProviderSealedTasks: !!p.allowCrossProviderSealedTasks, routesToOfficialCodexBackend: !!p.routesToOfficialCodexBackend, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -9055,6 +9055,7 @@ function drawEditor(p, presetID) {
   // (Provider.CarriesCompaction): Codex's own compaction can go only there
   let showCompaction = () => {};
   let showCrossProviderSealedTasks = () => {};
+  let showOfficialCodexBackend = () => {};
   const carriesCompaction = () => !!((draft.responses ?? (isNew && pr ? pr.responses : "")) || "").trim();
   if (custom) {
     name = input(draft.name, t("e.g. My Relay"));
@@ -9104,7 +9105,7 @@ function drawEditor(p, presetID) {
       showTLS();
       showAuth();
       showCompaction();
-      showCrossProviderSealedTasks();
+      showCrossProviderSealedTasks(); showOfficialCodexBackend();
     };
     queueMicrotask(() => slide(seg, "api"));
     url = input(draft[apiField[draft.api]], urlHint(draft.api), "url");
@@ -9112,7 +9113,7 @@ function drawEditor(p, presetID) {
     url.oninput = () => {
       draft[apiField[draft.api]] = url.value;
       if (carried) { draft[carried.from] = carried.value; carried = null; fillEndpoints(); }
-      showSearch(); showLocal(); showTLS(); showAuth(); showCompaction(); showCrossProviderSealedTasks();
+      showSearch(); showLocal(); showTLS(); showAuth(); showCompaction(); showCrossProviderSealedTasks(); showOfficialCodexBackend();
     };
     const urlWrap = el("div", "stack");
     urlWrap.append(seg, url);
@@ -9250,7 +9251,7 @@ function drawEditor(p, presetID) {
     if (draft.chat === undefined) { draft.chat = p?.chat || ""; draft.responses = p?.responses || ""; }
     endpoint = input(draft.chat || draft.responses || "", pr.endpoint, "url");
     endpoint.classList.add("endpoint");
-    endpoint.oninput = () => { draft.chat = draft.responses = endpoint.value.trim(); refreshEndpoints(); showCompaction(); showCrossProviderSealedTasks(); };
+    endpoint.oninput = () => { draft.chat = draft.responses = endpoint.value.trim(); refreshEndpoints(); showCompaction(); showCrossProviderSealedTasks(); showOfficialCodexBackend(); };
     ed.append(...field(t("Endpoint"), endpoint, pr.endpointHint ? t(pr.endpointHint) : ""));
   }
 
@@ -9657,6 +9658,9 @@ function drawEditor(p, presetID) {
         const [sharingRow, refreshSharing] = crossProviderSealedTasksField(carriesCompaction);
         advIn.append(...sharingRow);
         showCrossProviderSealedTasks = refreshSharing;
+        const [officialRow, refreshOfficial] = officialCodexBackendField(carriesCompaction);
+        advIn.append(...officialRow);
+        showOfficialCodexBackend = refreshOfficial;
       }
     }
   }
@@ -9739,7 +9743,7 @@ function drawEditor(p, presetID) {
       const add = (label, key, ph, hint) => {
         if (apiField[draft.api] === key) return;
         const i = input(draft[key], ph, "url");
-        i.oninput = () => { draft[key] = i.value; if (carried?.from === key) carried = null; showSearch(); showLocal(); showTLS(); showAuth(); showCompaction(); showCrossProviderSealedTasks(); };
+        i.oninput = () => { draft[key] = i.value; if (carried?.from === key) carried = null; showSearch(); showLocal(); showTLS(); showAuth(); showCompaction(); showCrossProviderSealedTasks(); showOfficialCodexBackend(); };
         eps.append(...field(t(label), i, t(hint)));
       };
       add("OpenAI URL", "chat", "https://…/v1", "if the vendor also serves chat completions");
@@ -9854,6 +9858,7 @@ function drawEditor(p, presetID) {
     if (custom) body.limitRestOff = !!draft.limitRestOff;
     if (!decideOnly(p || pr)) body.nativeCompaction = !!draft.nativeCompaction && carriesCompaction();
     body.allowCrossProviderSealedTasks = !!draft.allowCrossProviderSealedTasks && carriesCompaction() && !p?.account;
+    body.routesToOfficialCodexBackend = !!draft.routesToOfficialCodexBackend && carriesCompaction() && !p?.account;
     body.passUserAgent = !!draft.passUserAgent && uaPassable();
     const cx = parseContexts(draft.contexts || "");
     if (cx.error) { shown(ed.querySelector("input.contexts"))?.focus({ preventScroll: true }); return editorError(t("Context window: {v} is not a length like 128k or 1m", { v: cx.error }), "warn"); }
@@ -10034,6 +10039,18 @@ function crossProviderSealedTasksField(show) {
   tk.classList.add("cross-provider-sealed-tasks");
   cb.onchange = () => { draft.allowCrossProviderSealedTasks = cb.checked; };
   const row = field(t("Sealed task sharing"), tk, t("Enable this only for providers that share the same sealing/decryption backend. Both the source and destination providers must opt in; off by default. A URL or API key alone cannot establish compatibility."));
+  const refresh = () => { for (const e of row) e.style.display = show() ? "" : "none"; };
+  refresh();
+  return [row, refresh];
+}
+
+// officialCodexBackendField marks a shallow provider whose upstream chain ends
+// at OpenAI's official Codex backend, allowing cross-provider sealed task handoff.
+function officialCodexBackendField(show) {
+  const [tk, cb] = tick(t("Routes to official OpenAI Codex backend"), !!draft.routesToOfficialCodexBackend);
+  tk.classList.add("official-codex-backend");
+  cb.onchange = () => { draft.routesToOfficialCodexBackend = cb.checked; };
+  const row = field(t("Official Codex backend"), tk, t("Enable only when this provider's upstream chain ultimately reaches OpenAI's official Codex backend. Other providers with the same declaration can exchange sealed Codex tasks; off by default."));
   const refresh = () => { for (const e of row) e.style.display = show() ? "" : "none"; };
   refresh();
   return [row, refresh];

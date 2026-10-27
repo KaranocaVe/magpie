@@ -265,6 +265,8 @@ type providerJSON struct {
 
 	// AllowCrossProviderSealedTasks is the provider editor's explicit opt-in.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
+	// RoutesToOfficialCodexBackend marks providers whose upstream chain ends at OpenAI's official Codex backend.
+	RoutesToOfficialCodexBackend bool `json:"routesToOfficialCodexBackend,omitempty"`
 }
 
 type moveJSON struct {
@@ -598,7 +600,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string]string) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
+		Chat: p.Chat, Responses: p.Responses, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, RoutesToOfficialCodexBackend: p.RoutesToOfficialCodexBackend, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
@@ -1288,6 +1290,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// AllowCrossProviderSealedTasks is an explicit per-provider opt-in;
 			// a save that leaves it out keeps the existing value.
 			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
+			// RoutesToOfficialCodexBackend is an explicit per-provider declaration;
+			// a save that leaves it out keeps the existing value.
+			RoutesToOfficialCodexBackend *bool `json:"routesToOfficialCodexBackend"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			fail(rw, err)
@@ -1311,6 +1316,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		if req.AllowCrossProviderSealedTasks != nil {
 			in.AllowCrossProviderSealedTasks = *req.AllowCrossProviderSealedTasks
+		}
+		if req.RoutesToOfficialCodexBackend != nil {
+			in.RoutesToOfficialCodexBackend = *req.RoutesToOfficialCodexBackend
 		}
 		if req.AuthHeader != nil {
 			in.AuthHeader = *req.AuthHeader
@@ -1399,6 +1407,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Unredacted = in.Unredacted
 				pr.NativeCompaction = in.NativeCompaction
 				pr.AllowCrossProviderSealedTasks = in.AllowCrossProviderSealedTasks
+				pr.RoutesToOfficialCodexBackend = in.RoutesToOfficialCodexBackend
 				pr.PassUserAgent = in.PassUserAgent
 				pr.AuthHeader = in.AuthHeader
 				// and what its editor sets beside them: how requests spread
@@ -1654,6 +1663,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					}
 					if req.AllowCrossProviderSealedTasks == nil {
 						in.AllowCrossProviderSealedTasks = old.AllowCrossProviderSealedTasks
+					}
+					if req.RoutesToOfficialCodexBackend == nil {
+						in.RoutesToOfficialCodexBackend = old.RoutesToOfficialCodexBackend
 					}
 					if req.AuthHeader == nil {
 						in.AuthHeader = old.AuthHeader

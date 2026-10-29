@@ -4,7 +4,8 @@
 // shown and a Cancel beside it; once it is on, the row says where it runs.
 // Off, a downloaded model can be deleted, after asking. Its words are shown
 // in full, in every language, in a wide window and a narrow one, and a
-// click moves nothing.
+// click moves nothing. Under it, the model's threshold is picked from the
+// app's menu too.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -36,8 +37,9 @@ function serve(lang, masking, model, posts) {
     if (url.pathname === "/api/settings") return json(settings());
     if (url.pathname === "/api/privacy-model") {
       if (r.request().method() === "POST") {
-        const { do: doing, model: id } = JSON.parse(r.request().postData());
-        posts.push(id ? doing + " " + id : doing);
+        const { do: doing, model: id, score } = JSON.parse(r.request().postData());
+        posts.push([doing, id, score].filter((x) => x !== undefined && x !== "").join(" "));
+        if (doing === "score") model.minScore = score || model.defaultScore;
         if (doing === "on") Object.assign(model, { downloading: true, done: 0, total: size, ticks: 0 });
         if (doing === "cancel") Object.assign(model, { downloading: false, done: 0 });
         if (doing === "remove") Object.assign(model, { installed: false, on: false });
@@ -82,6 +84,29 @@ const pickWords = {
   "zh-TW": { head: "本機模型", note: "中英文，程式碼裡很少誤判 · 39 MB" },
   ja: { head: "ローカルモデル", note: "中国語と英語、コードでの誤検出が少ない · 39 MB" },
   de: { head: "Lokales Modell", note: "Chinesisch und Englisch, wenig Fehlalarme in Code · 39 MB" },
+};
+
+const scoreWords = {
+  en: { name: "Confidence threshold", def: "Default (0.8)", most: "Masks the most" },
+  zh: { name: "置信度阈值", def: "默认（0.8）", most: "遮得最多" },
+  "zh-TW": { name: "信賴度門檻", def: "預設（0.8）", most: "遮得最多" },
+  ja: { name: "信頼度のしきい値", def: "デフォルト（0.8）", most: "最も多くマスク" },
+  de: { name: "Konfidenzschwelle", def: "Standard (0.8)", most: "Maskiert am meisten" },
+};
+
+// where AstrLink Guard runs (yyhhyyyyyy on Discord: it said "on the CPU"
+// while CoreML ran it): CoreML on the device its plan picked, the CPU
+// with CoreML's error after a failed read, the CPU where there's no CoreML
+const runWords = {
+  en: { ne: "On, with CoreML on the Neural Engine", gpu: "On, with CoreML on the GPU", ml: "On, with CoreML", failed: "On, on the CPU: CoreML failed (prediction failed)", cpu: "On, on the CPU" },
+  zh: { ne: "已开启，通过 CoreML 运行在神经网络引擎", gpu: "已开启，通过 CoreML 运行在 GPU", ml: "已开启，通过 CoreML 运行", failed: "已开启，运行在 CPU：CoreML 出错（prediction failed）", cpu: "已开启，运行在 CPU" },
+  "zh-TW": { ne: "已開啟，透過 CoreML 執行於神經網路引擎", gpu: "已開啟，透過 CoreML 執行於 GPU", ml: "已開啟，透過 CoreML 執行", failed: "已開啟，執行於 CPU：CoreML 出錯（prediction failed）", cpu: "已開啟，執行於 CPU" },
+  ja: { ne: "オン、CoreML により Neural Engine で実行中", gpu: "オン、CoreML により GPU で実行中", ml: "オン、CoreML で実行中", failed: "オン、CPU で実行中：CoreML が失敗しました（prediction failed）", cpu: "オン、CPU で実行中" },
+  de: { ne: "An, mit CoreML auf der Neural Engine", gpu: "An, mit CoreML auf der GPU", ml: "An, mit CoreML", failed: "An, auf der CPU: CoreML ist ausgefallen (prediction failed)", cpu: "An, auf der CPU" },
+};
+const runs = {
+  ne: { via: "CoreML", device: "Neural Engine" }, gpu: { via: "CoreML", device: "GPU" }, ml: { via: "CoreML" },
+  failed: { device: "CPU", gpuError: "prediction failed" }, cpu: { device: "CPU" },
 };
 
 // what the row shows: its words and its New mark, whether they are cut,
@@ -140,6 +165,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(posts, ["on"]);
         assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the click moved nothing");
         assert.deepEqual(errors, []);
+      });
+    }
+  }
+
+  for (const lang of Object.keys(runWords)) {
+    for (const width of [1100, 640]) {
+      test(`${engine} ${lang} ${width}px: AstrLink Guard says what runs it`, async (t) => {
+        for (const [k, run] of Object.entries(runs)) {
+          const model = { ...guard, installed: true, on: true, running: true, minScore: 0.8, defaultScore: 0.8, ...run };
+          const { browser, page, errors } = await open(engine, lang, width, true, model, []);
+          await page.locator("#privacyModelRow .segs").waitFor();
+          const m = await look(page);
+          await browser.close();
+          assert.equal(m.sub, runWords[lang][k], k);
+          assert(!m.cut && m.inside && !m.wide, `${k} shown in full and inside: ${JSON.stringify(m)}`);
+          assert.deepEqual(errors, []);
+        }
       });
     }
   }
@@ -206,6 +248,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await pick.textContent()).trim(), "Privacy Filter");
         let m = await look(page);
         assert(!m.cut && m.inside && !m.wide, `shown in full and inside: ${JSON.stringify(m)}`);
+        // the menu and the switch are two boxes: they stand apart, on one line
+        const gap = await page.evaluate(() => {
+          const p = document.querySelector("#privacyModelRow .pm-model").getBoundingClientRect(), s = document.querySelector("#privacyModelRow .segs").getBoundingClientRect();
+          return { gap: s.left - p.right, mid: Math.abs(p.top + p.height / 2 - (s.top + s.height / 2)) };
+        });
+        assert(gap.gap >= 6 && gap.gap <= 12 && gap.mid <= 1, `the menu stands apart from the switch: ${JSON.stringify(gap)}`);
         const before = await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]);
         await pick.click();
         const menu = page.locator(".proto-menu");
@@ -225,6 +273,65 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction(() => !document.querySelector(".proto-menu"));
         assert.deepEqual(posts, ["pick astrlink-guard"]);
         assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the pick moved nothing");
+        assert.deepEqual(errors, []);
+      });
+    }
+  }
+
+  // the threshold (@Yayoi_no_yume on X): under the model, its default
+  // or one the user picks from the app's menu, in every language; the
+  // pick is sent with the model it is for, and shown once magpie has it
+  for (const lang of Object.keys(scoreWords)) {
+    for (const width of [1100, 640]) {
+      test(`${engine} ${lang} ${width}px: the model's threshold is picked from the app's menu`, async (t) => {
+        const w = scoreWords[lang];
+        const posts = [], model = { ...guard, installed: true, on: true, running: true, device: "CPU", minScore: 0.8, defaultScore: 0.8 };
+        const { browser, page, errors } = await open(engine, lang, width, true, model, posts);
+        t.after(() => browser.close());
+        const row = page.locator("#pmScoreRow");
+        await row.waitFor();
+        await wheelTo(page, row, 300);
+        assert(await page.evaluate(() => document.querySelector("#privacyModelRow").nextElementSibling === document.querySelector("#pmScoreRow")), "right under the model");
+        assert.equal(await row.locator("select").count(), 0, "no native select");
+        const shown = () => row.evaluate((r) => {
+          const sub = r.querySelector(".sub"), b = r.getBoundingClientRect(), list = r.closest(".list").getBoundingClientRect();
+          return {
+            name: r.querySelector(".name").textContent, sub: sub.textContent, pick: r.querySelector("button.pm-score").textContent.trim(),
+            cut: sub.scrollWidth > sub.clientWidth + 1 || sub.scrollHeight > sub.clientHeight + 1,
+            inside: b.left >= list.left - 1 && b.right <= list.right + 1, wide: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          };
+        });
+        let m = await shown();
+        assert.equal(m.name, w.name);
+        if (lang !== "en") assert(!/less sure/.test(m.sub), `translated: ${m.sub}`);
+        assert.equal(m.pick, "0.8");
+        assert(!m.cut && m.inside && !m.wide, `shown in full and inside: ${JSON.stringify(m)}`);
+        const before = await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]);
+        const menu = page.locator(".proto-menu");
+        const items = async () => {
+          await row.locator("button.pm-score").click();
+          await menu.waitFor();
+          return menu.evaluate((b) => ({
+            head: b.querySelector(".pm-head").textContent,
+            items: [...b.querySelectorAll(".pm-item")].map((i) => [i.querySelector(".pm-name").textContent, i.querySelector(".pm-note").textContent, i.classList.contains("on")]),
+            inside: b.getBoundingClientRect().left >= 0 && b.getBoundingClientRect().right <= innerWidth,
+          }));
+        };
+        let got = await items();
+        assert.equal(got.head, w.name);
+        assert.deepEqual(got.items.map((i) => i[0]), [w.def, "0.5", "0.6", "0.7", "0.85", "0.9", "0.95"]);
+        assert.deepEqual(got.items.map((i) => i[2]), [true, false, false, false, false, false, false], "the default is ticked");
+        assert.equal(got.items[1][1], w.most);
+        assert(got.inside, "the menu is inside the window");
+        await menu.locator(".pm-item", { hasText: /^0\.9$/ }).click();
+        await page.waitForFunction(() => document.querySelector("#pmScoreRow button.pm-score")?.textContent.trim() === "0.9");
+        assert.deepEqual(posts, ["score astrlink-guard 0.9"]);
+        got = await items();
+        assert.deepEqual(got.items.map((i) => i[2]), [false, false, false, false, false, true, false], "0.9 is ticked");
+        await menu.locator(".pm-item").first().click();
+        await page.waitForFunction(() => document.querySelector("#pmScoreRow button.pm-score")?.textContent.trim() === "0.8");
+        assert.deepEqual(posts, ["score astrlink-guard 0.9", "score astrlink-guard 0"]);
+        assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the picks moved nothing");
         assert.deepEqual(errors, []);
       });
     }

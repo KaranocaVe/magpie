@@ -218,8 +218,14 @@ type providerJSON struct {
 	// first, the gateway still trying them in their order
 	KeepLoginAs string `json:"keepLoginAs,omitempty"`
 	// SwitchOnly: magpie only moves Codex's own sign-in between its
-	// accounts, never routing its requests for failover (#1907)
+	// accounts, never routing its requests for failover (#1907); on
+	// Claude's, the accounts are kept to Claude Code's own sign-in and
+	// serve no request through magpie (myduso on Discord)
 	SwitchOnly bool `json:"switchOnly,omitempty"`
+	// CapStop and CapCareful: how its accounts end at their caps
+	// (plugins#349), set on their own with capstop and capcareful
+	CapStop    bool `json:"capStop,omitempty"`
+	CapCareful bool `json:"capCareful,omitempty"`
 	// how many requests each of its keys or accounts has out at once, the
 	// rest queued: the user's (null: not set), and what its plugin says
 	// when the user set none (provider.Concurrency)
@@ -433,6 +439,9 @@ type gatewayJSON struct {
 	// PublicURL is MAGPIE_PUBLIC_URL when it is among LANURLs: Connect
 	// starts there until the user picks an address (#1551)
 	PublicURL string `json:"publicURL,omitempty"`
+	// LANPublic are those of LANURLs at an internet address, which anyone
+	// online reaches, not only this network
+	LANPublic []string `json:"lanPublic,omitempty"`
 	// OnNetwork: MAGPIE_ADDR puts it beyond loopback (a server, a Docker
 	// image), so every caller is shown a gateway key, and LAN is true too:
 	// callers from elsewhere, a container's host among them, need one
@@ -495,9 +504,6 @@ type providersJSON struct {
 	// after Codex was switched to another, until it is quit and opened
 	// again (provider.CodexAppStale)
 	CodexApp string `json:"codexApp,omitempty"`
-	// CodexAppOut is a Codex app left unable to send on its used-up
-	// ChatGPT account until it is opened again (codexAppOutState)
-	CodexAppOut *codexAppOutJSON `json:"codexAppOut,omitempty"`
 	// Plugins are the providers the plugins sign in to, for the add sheet
 	Plugins []pluginSubJSON `json:"plugins"`
 	// OnPlugins are the built-in subscriptions moved onto their plugins,
@@ -604,7 +610,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
 		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
@@ -687,7 +693,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		}
 		key := restKey(k)
 		if r, ok := keyRestOf(key); ok {
-			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key}
+			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key, Probed: r.Probed}
 		}
 	}
 	if !out.Key.Set && p.Ready() {
@@ -917,6 +923,7 @@ func providersState() providersJSON {
 	s.Gateway.LAN = settings.Load().LAN || s.Gateway.OnNetwork
 	if s.Gateway.LAN {
 		s.Gateway.LANURLs = gateway.LANURLs()
+		s.Gateway.LANPublic = gateway.PublicURLs(s.Gateway.LANURLs)
 		if u := gateway.PublicURL(); slices.Contains(s.Gateway.LANURLs, u) {
 			s.Gateway.PublicURL = u
 		}
@@ -966,7 +973,6 @@ func providersState() providersJSON {
 	s.Gateway.Archive = archiveState()
 	s.CodexDaemon = provider.CodexDaemonStale()
 	s.CodexApp = provider.CodexAppStale()
-	s.CodexAppOut = codexAppOutState()
 	s.Plugins = pluginSubs()
 	s.Fetching = provider.FetchingNew()
 	return s
@@ -997,6 +1003,10 @@ var (
 func moveContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 }
+
+// appLink hands an app's import link over once something here opens it
+// (agent.OpenAppLink); tests stand in for the system's answer.
+var appLink = agent.OpenAppLink
 
 func providerRoutes(mux *http.ServeMux, w Windows) {
 	importAppsRoutes(mux)
@@ -1676,7 +1686,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.KeepLogin = old.KeepLogin // set on its own, with keeplogin
 					in.KeepLoginAs = old.KeepLoginAs
 					in.SwitchOnly = old.SwitchOnly
-					in.Off = old.Off // and this with off and on
+					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful // capstop, capcareful
+					in.Off = old.Off                                        // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
 					}
@@ -1875,6 +1886,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 			agent.SyncCatalogSoon()
+		case "capstop":
+			// a request ends at the accounts' caps, 429, or goes on to the
+			// fallbacks (plugins#349)
+			if err := provider.SetCapStop(in.ID, in.CapStop); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "capcareful":
+			// usage read again near a cap, an account held while it can't
+			// be (plugins#349)
+			if err := provider.SetCapCareful(in.ID, in.CapCareful); err != nil {
+				fail(rw, err)
+				return
+			}
 		case "affinity":
 			if err := provider.SetAffinity(in.ID, in.Affinity); err != nil {
 				fail(rw, err)
@@ -2292,10 +2317,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return provider.ImportFactoryKeys(ctx, files)
 			}
 		}
-		res, err := imp(ctx, in.Agent, in.Files)
-		if err != nil {
-			fail(rw, err)
-			return
+		// the address a sign-in's browser ended on, pasted here rather than
+		// in the sign-in's Callback URL field, finishes that sign-in: it is
+		// no account file, and never goes to the vendor as a token
+		res, rest := provider.PastedSignIns(in.Files)
+		if len(rest) > 0 {
+			more, err := imp(ctx, in.Agent, rest)
+			if err != nil && len(res) == 0 {
+				fail(rw, err)
+				return
+			}
+			if err != nil {
+				more = []provider.ImportedAccount{{Status: "failed", Error: err.Error()}}
+			}
+			res = append(res, more...)
 		}
 		agent.SyncCatalogSoon()
 		writeJSON(rw, struct {
@@ -2378,10 +2413,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		// again: that one pane, not System Settings' scheme at large
 		if strings.HasPrefix(in.URL, "https://") || strings.HasPrefix(in.URL, "http://") || strings.HasPrefix(in.URL, agent.CindyScheme) || strings.HasPrefix(in.URL, agent.LodyScheme) || strings.HasPrefix(in.URL, agent.AionUiScheme) || in.URL == autostart.LoginItemsURL {
 			open := w.OpenURL
-			if strings.HasPrefix(in.URL, agent.LodyScheme) {
+			// an app's import link is handed over only when something
+			// here opens it: the system says nothing when nothing does,
+			// and Add magpie did nothing at all (sungt, 10-29)
+			app := func(u string) error { return appLink(u, w.OpenURL) }
+			switch {
+			case strings.HasPrefix(in.URL, agent.LodyScheme):
 				// Lody on Linux is run with the link, which xdg-open
 				// turned away (agent.OpenLody)
-				open = func(u string) error { return agent.OpenLody(u, w.OpenURL) }
+				open = func(u string) error { return agent.OpenLody(u, app) }
+			case strings.HasPrefix(in.URL, agent.CindyScheme), strings.HasPrefix(in.URL, agent.AionUiScheme):
+				open = app
 			}
 			// Open again on a sign-in says why it didn't open (#2043)
 			if err := open(in.URL); err != nil {

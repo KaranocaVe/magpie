@@ -1223,12 +1223,18 @@ const MENU_FROM_LIST = new Set(["claude-desktop", "cursor-local"]);
 const listsMenu = (a) => MENU_FROM_LIST.has(a.id) || !!a.menu;
 const menuFromList = (a) => listsMenu(a) && a.wired && !!a.models;
 
-// menuSaid: the models such an agent lists, by name while they are few
+// menuSaid: the models such an agent lists, as its list's ticks are. Every
+// one ticked is said as all of them, a few picked by their names, and more
+// as how many of how many. Its first two names and +N (routing groups come
+// first) read as a pick of a group and a model while every model was on
+// (NG_shiyu on X: 「路由组，模型+数字」 here, one 「路由」 on the row above,
+// and every model in the list opened)
 function menuSaid(c) {
   if (!c.shown) return t("No models");
+  if (c.shown >= c.listed) return t("All {n} models", { n: c.listed });
   const names = c.names || [];
-  if (!names.length) return t("{n} models", { n: c.shown });
-  return names.slice(0, 2).join(", ") + (c.shown > 2 ? " +" + (c.shown - 2) : "");
+  if (c.shown <= 2 && names.length >= c.shown) return names.slice(0, c.shown).join(", ");
+  return t("Showing {shown} / {listed} models", { shown: c.shown, listed: c.listed });
 }
 
 // menuButton: where the model picker stands in another agent's row, the
@@ -1519,7 +1525,20 @@ function connectRow(a, row, who, { fields, extras, fieldBtn, sw, kind }) {
   const start = kind === "ok" && !listsMenu(a) ? startField(a) : null;
   if (start) fields.querySelector(`:scope > [data-key="${CSS.escape(start.key)}"]`)?.remove();
   if (kind === "ok") {
-    if (a.wired) row.append(expandLink(a));
+    if (a.wired) {
+      // a click anywhere on the row that isn't one of its controls opens or
+      // closes it, as a disclosure row does on the Mac (NG_shiyu on X: the
+      // space between the name and the model did nothing, only the small
+      // link did); the link stays the control the keyboard and a screen
+      // reader use, with its aria-expanded
+      const link = expandLink(a);
+      row.append(link);
+      row.onclick = (ev) => {
+        if (ev.target.closest("button, a, input, label, [role], .ag-exp, .ag-handle")) return;
+        if (!getSelection()?.isCollapsed) return; // words being selected
+        link.click();
+      };
+    }
     // the square copying the command that starts it on magpie (agy), the
     // only way it takes magpie: on the row, before the model
     const launch = a.wired && fields.querySelector(".field.launch");
@@ -9000,7 +9019,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, limitRestOff: !!p.limitRestOff, nativeCompaction: !!p.nativeCompaction, allowCrossProviderSealedTasks: !!p.allowCrossProviderSealedTasks, routesToOfficialCodexBackend: !!p.routesToOfficialCodexBackend, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, limitRestOff: !!p.limitRestOff, nativeCompaction: !!p.nativeCompaction, allowCrossProviderSealedTasks: !!p.allowCrossProviderSealedTasks, routesToOfficialCodexBackend: !!p.routesToOfficialCodexBackend, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -9039,7 +9058,7 @@ function drawEditor(p, presetID) {
   const another = isNew && !!pr?.added;
   // an editor opened afresh has Names & levels folded: it stayed open in
   // every editor after, until magpie was restarted (Hu9956, #868)
-  if (!draft) naming = null;
+  if (!draft) naming = unpickedShown = null;
   draft = draft || (p
     ? draftOf(p)
     : pr
@@ -9350,7 +9369,7 @@ function drawEditor(p, presetID) {
       if (priceTypedError(ed)) return;
       const picked = accountModelsDraft(p);
       if (picked === false) return pickError();
-      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
+      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
       saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
@@ -9963,7 +9982,7 @@ function drawEditor(p, presetID) {
       body.baseAPI = draft.api === "openai" ? "chat" : draft.api;
     }
     if (custom) { body.icon = draft.icon || "generic"; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.balanceMethod = draft.balanceMethod || ""; body.modelsURL = (draft.modelsURL || "").trim(); }
-    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.noModels = noneChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
+    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.noModels = noneChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
     body.searches = !!draft.searches && searchable();
     body.pinUpstream = !!draft.pinUpstream;
     if (twoKeyHeaders()) body.authHeader = draft.authHeader || "";
@@ -10962,6 +10981,12 @@ const servedIds = (p) => draft.chosen.length ? draft.chosen : draft.none ? [] : 
 // (#833), kept for the next editor opened. MCHIPS_MAX: the most the box is
 // tall held, as app.css's .mchips max-height: min(240px, 40vh) says
 let modelsOpen = false;
+// unpickedShown: the provider whose editor shows its unpicked models while
+// it serves Picked only (yyddbds on Discord: 选择了仅所选分类，下边的模型项
+//并没有变化). Picked only shows the picks, the others behind Show the
+// other n; a click on a model shows them all, so nothing vanishes while
+// picking, and Picked only clicked folds them away again
+let unpickedShown = null;
 const MCHIPS_MAX = 240;
 // emptyModelsHint is what an empty model list says. Azure OpenAI's is its
 // deployments, asked for with the key after it is added (#1995): while that
@@ -11126,7 +11151,9 @@ function renderModels(p) {
     if (agentMenu && chips.contains(agentMenu.anchor)) closeAgentMenu();
     chips.replaceChildren();
     const f = (q?.value || "").trim().toLowerCase();
-    let shown = 0, hidden = 0;
+    let shown = 0, hidden = 0, unpicked = 0;
+    // Picked only, unfiltered: the picks alone (unpickedShown)
+    const picksOnly = draft.chosen.length && !f && unpickedShown !== p.id && !decideOnly(p);
     // with none picked agents are served the vendor's list, up to 24 of
     // it: those are drawn as served, not as left out (#614: the one model
     // unticked and saved was still "1 model" on the card). Kept for routing
@@ -11143,6 +11170,7 @@ function renderModels(p) {
       // past the first 80 only the picked are drawn, till the rest are
       // asked for: a picked model is never out of sight (#685: 10 picked,
       // 7 shown, and "4 more, filter to find them" with no names to filter by)
+      if (picksOnly && !on) { unpicked++; continue; }
       if (shown >= 80 && !f && !showAll && !on) { hidden++; continue; }
       const c = el("button", "mchip pick" + (on ? " on" : served.has(m.id) ? " auto" : "") + (noAPI(m) ? " noapi" : ""));
       c.append(el("span", "", m.name && m.name !== m.id ? m.name : m.id));
@@ -11181,12 +11209,12 @@ function renderModels(p) {
       c.onclick = () => {
         draft.chosen = on ? draft.chosen.filter((x) => x !== m.id) : [...draft.chosen, m.id];
         draft.none = true;
+        unpickedShown = p.id;
         draw();
       };
       chips.append(c);
       shown++;
     }
-    if (hidden) chips.append(showRest(hidden, () => { showAll = true; draw(); }));
     for (const id of draft.chosen) {
       if (p.models.some((m) => m.id === id) || (f && !id.toLowerCase().includes(f))) continue;
       const c = el("button", "mchip on own");
@@ -11197,6 +11225,7 @@ function renderModels(p) {
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draft.none = true; draw(); };
       chips.append(c);
     }
+    if (hidden || unpicked) chips.append(showRest(hidden || unpicked, () => { if (unpicked) unpickedShown = p.id; else showAll = true; draw(); }));
     if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t(emptyModelsHint(p))));
     // the list is of models agents chat with: image, embedding and speech
     // models are left out of it, and an image model is set in Settings
@@ -11595,7 +11624,10 @@ function renderModels(p) {
     b.onclick = () => {
       if (v === "list") { draft.chosen = []; draft.typed = ""; draft.none = false; }
       else if (v === "none") { draft.chosen = []; draft.typed = ""; draft.none = true; }
-      else if (!draft.chosen.length) { draft.chosen = p.models.filter((m) => !noAPI(m)).slice(0, 24).map((m) => m.id); draft.none = true; }
+      else {
+        if (!draft.chosen.length) { draft.chosen = p.models.filter((m) => !noAPI(m)).slice(0, 24).map((m) => m.id); draft.none = true; }
+        unpickedShown = null;
+      }
       draw();
     };
     serves.append(b);
@@ -11784,12 +11816,25 @@ function renderModels(p) {
 }
 
 // renderDrawers: the provider's image models. Agents don't chat with them,
-// so they aren't among its Models; they are listed to say they are there,
-// and one is picked in Settings → Images.
+// so they aren't among its Models; one is picked in Settings → Images,
+// which lists the ticked ones. A click unticks one there, staged in the
+// draft until Save as a model's tick is (321sssrt on X: OpenAI's dozen).
 function renderDrawers(p) {
-  const chips = el("div", "mchips");
-  for (const id of p.drawIds) chips.append(el("span", "mchip ro", id));
-  return field(t("Image models"), chips, t("Agents don't chat with these, so they aren't among its models: the one that draws is picked in Settings → Images."));
+  const chips = el("div", "mchips drawers");
+  draft.hiddenDrawers ||= [...(p.hiddenDrawers || [])];
+  for (const id of p.drawIds) {
+    const c = el("button", "mchip pick");
+    c.type = "button";
+    c.append(el("span", "", id));
+    const show = () => { const on = !draft.hiddenDrawers.includes(id); c.classList.toggle("on", on); c.setAttribute("aria-pressed", on); };
+    c.onclick = () => {
+      draft.hiddenDrawers = draft.hiddenDrawers.includes(id) ? draft.hiddenDrawers.filter((x) => x !== id) : [...draft.hiddenDrawers, id];
+      show();
+    };
+    show();
+    chips.append(c);
+  }
+  return field(t("Image models"), chips, t("Settings → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models."));
 }
 
 // renderRouting: how the gateway spreads requests over the keys or
@@ -19604,6 +19649,8 @@ function renderSettings() {
     (v) => savePrefs({ ...keep, claudeWarmAts: v, claudeWarmAt: v[0] || "" }));
   renderWarmAtOwn(s);
   renderAutoResetOwn(s);
+  renderWarmNow("codex", s.codexUsers, "#warmNowRow");
+  renderWarmNow("claude", s.claudeUsers, "#claudeWarmNowRow");
   // each built-in vendor's daily check-in, its tab shown while one of its
   // accounts is signed in (#694, #811): its switch, how each account went,
   // and under it each account's own (#1902)
@@ -20862,8 +20909,47 @@ function renderWarmAtOwn(s) {
     box.append(segs([["same", t("Same")], ["own", t("Own")], ["off", t("Off")]], mode, (v) =>
       save(user, v === "same" ? "" : v === "off" ? "off" : s.codexWarmAt || "06:00")));
     r.append(who, box);
-    list.append(r);
+    $("#warmNowRow").before(r); // Warm up now stays last
   }
+}
+
+// renderWarmNow is Warm up now (a Windows user on Discord): one account's
+// warm-up request, the one the scheduled warm-up sends, sent at once. One
+// account is sent at a press; with more the press asks which. What it came
+// to stays on the row's line (warmNowSaid) across renders.
+const warmNowSaid = {};
+function renderWarmNow(agent, users, rowId) {
+  const row = $(rowId), sub = row.querySelector(".sub"), box = row.lastElementChild;
+  users = users || [];
+  row.hidden = !users.length;
+  const said = warmNowSaid[agent];
+  sub.textContent = said ? said.text : t("Sends the warm-up's one tiny request to an account now");
+  sub.classList.toggle("err", !!said?.bad);
+  const b = el("button", "text warm-now-go", t(users.length > 1 ? "Warm up…" : "Warm up"));
+  b.type = "button";
+  b.disabled = !!said?.busy;
+  b.classList.toggle("busy", !!said?.busy);
+  if (users.length > 1) b.setAttribute("aria-haspopup", "menu");
+  const send = async (user) => {
+    const say = (o) => { warmNowSaid[agent] = o; if ($(rowId).isConnected) renderWarmNow(agent, users, rowId); };
+    say({ busy: true, text: t("Warming up {who}…", { who: user }) });
+    try {
+      await api("warm-now", { agent, user });
+      say({ text: t("Warmed up {who} {when}", { who: user, when: syncWhen(new Date().toISOString()) }) });
+      status(t("Warmed up {who}", { who: user }), "ok");
+      loadQuotas(); // the window it started
+    } catch (e) {
+      say({ bad: true, text: t("Couldn't warm up {who}: {why}", { who: user, why: e.message }) });
+      status(t("Couldn't warm up {who}: {why}", { who: user, why: e.message }), "err");
+    }
+  };
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (users.length === 1) return send(users[0]);
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, users.map((u) => ({ v: u, name: u, note: "", literalName: true })), null, send, "Warm up which account", "sess-menu", "right");
+  };
+  box.replaceChildren(b);
 }
 
 // renderAlerts draws the usage alerts (#368): a notification when a window
@@ -21319,6 +21405,8 @@ function renderImageGen(s, keep, box) {
   // so where it draws, picked or automatic (#1865)
   const draws = v === "off" || gone ? "" : v ? shown : s.imageGenAuto;
   if (models.find((x) => x.id === draws)?.vendorPicks) who.append(el("div", "sub image-gen-vendor", t("ChatGPT's image backend picks the model itself, whichever is named, so one GPT Image is listed")));
+  // a pick unticked in its provider's editor since still draws, and says so
+  if (s.imageGenHidden && !gone && v !== "off") who.append(el("div", "sub image-gen-hidden", t("{model}, picked here, is unticked in its provider's Image models: it still draws, but leaves this list once another is picked. Tick it there to keep it listed.", { model: named(shown) })));
   if (gone) who.append(el("div", "sub err image-gen-missing", s.imageGenAuto
     ? t("{model}, picked here, isn't set up any more: its provider was removed or turned off, or no longer has it. {auto}, the automatic choice, draws in its place. Pick another model here.", { model: v, auto: named(s.imageGenAuto) })
     : t("{model}, picked here, isn't set up any more: its provider was removed or turned off, or no longer has it. No other model draws, so a request that names no model is turned away. Pick another model here.", { model: v })));

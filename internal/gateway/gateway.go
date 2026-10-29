@@ -1135,7 +1135,8 @@ func drawerObjects(r *http.Request) []map[string]any {
 		if !p.On() || p.DecideOnly() {
 			continue
 		}
-		for _, m := range Drawers(p) {
+		// less those unticked in its editor, as Settings › Images lists them
+		for _, m := range OfferedDrawers(p) {
 			if held && (!modelAllowed(who, p, m.ID) || !accountServes(who, p, m.ID)) {
 				continue
 			}
@@ -2950,6 +2951,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if ultra && from == provider.Anthropic {
 				ctx = withUltra(ctx)
 			}
+			if !last {
+				// another candidate is asked if this one can't answer
+				// now: a plugin whose vendor queues the request says so
+				// at once instead of waiting in the queue (FallbackHeader)
+				ctx = withFallback(ctx)
+			}
 			hw.stop = stop
 			if autoPicks(c) {
 				// the reply names the pick it went as last (#256: it
@@ -4424,6 +4431,10 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	if p.IsPlugin() {
 		req.Header.Set(provider.ConversationHeader, conversationID(in, body))
 		tellWorkPlace(req.Header, to, body)
+		req.Header.Del(provider.FallbackHeader)
+		if hasFallback(ctx) {
+			req.Header.Set(provider.FallbackHeader, "1")
+		}
 	}
 	if p.IsRemoteMagpie() {
 		passOnCaller(ctx, req)
@@ -5178,13 +5189,23 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Responses && sse {
 		ids = &idTidy{}
 	}
-	// out is what a filter let through, through ids and phases
+	// a thinking block with no signature, which a Messages client may read
+	// as required (Grok Build), gets an empty one, as Anthropic's own
+	// blocks start (thinking_signature.go)
+	var thinkSigs *sigFieldTidy
+	if proto == provider.Anthropic {
+		thinkSigs = &sigFieldTidy{sse: sse}
+	}
+	// out is what a filter let through, through ids, phases and thinkSigs
 	out := func(b []byte) []byte {
 		if ids != nil {
 			b = ids.write(b)
 		}
 		if phases != nil {
-			return phases.write(b)
+			b = phases.write(b)
+		}
+		if thinkSigs != nil {
+			b = thinkSigs.write(b)
 		}
 		return b
 	}
@@ -5242,6 +5263,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			}
 			if phases != nil {
 				out = phases.write(out)
+			}
+			if thinkSigs != nil {
+				out = thinkSigs.write(out)
 			}
 			if _, werr := write(out); werr != nil {
 				return res.StatusCode, "", true
@@ -5311,6 +5335,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if phases != nil {
 		write(phases.flush())
+	}
+	if thinkSigs != nil {
+		write(thinkSigs.flush())
 	}
 	if sse {
 		sniff.drain()

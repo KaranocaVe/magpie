@@ -955,6 +955,12 @@ magpie.plugin("sessions", (ctx) => {
       s.title === s.id ? "" : s.id.slice(0, 8)].filter(Boolean).join(" · "));
     if (s.via?.length) sub.title = s.via.map(viaText).join("\n");
     if (s.wsl) sub.prepend(wslBadge(s), " ");
+    if (s.agent === "codex" && s.no_fallback) {
+      const note = s.route_provider ? t("Pinned: {provider}", { provider: s.route_provider }) : t("Automatic · no fallback");
+      const pinned = el("span", "sm-prov", note);
+      pinned.title = t("Strict session provider override: automatic fallback disabled");
+      sub.prepend(pinned, " ");
+    }
     if (otherProvider(s)) {
       const p = el("span", "sm-prov", s.provider);
       p.title = t("Made with {from}: Codex's history lists only {to}'s sessions now", { from: s.provider, to: s.uses_provider });
@@ -1128,6 +1134,45 @@ magpie.plugin("sessions", (ctx) => {
     if (s.wsl) line("WSL", s.wsl);
     if (s.cwd) line(t("Folder"), s.cwd);
     line(t("Session ID"), s.id, copyBtn(s.id, t("Session id")));
+    if (s.agent === "codex") {
+      // The upstream is chosen by Magpie for this session only; this is NOT
+      // Codex's model_provider, and never edits its rollout or state database.
+      const pick = el("select", "sm-route-provider");
+      const option = (id, name) => {
+        const o = el("option", "", name);
+        o.value = id;
+        pick.append(o);
+      };
+      option("", t("Automatic (Magpie routing)"));
+      option("__strict_auto", t("Automatic · no fallback"));
+      for (const p of data.route_providers || []) option(p.id, p.name === p.id ? p.id : p.name + " · " + p.id);
+      if (s.route_provider && ![...pick.options].some((o) => o.value === s.route_provider))
+        option(s.route_provider, s.route_provider + " (" + t("unavailable") + ")");
+      pick.value = s.route_provider || (s.no_fallback ? "__strict_auto" : "");
+      pick.title = t("Pinned provider: no fallback to any other upstream");
+      pick.setAttribute("aria-label", t("Routing provider"));
+      pick.onchange = async (e) => {
+        e.stopPropagation();
+        const before = s.route_provider || (s.no_fallback ? "__strict_auto" : "");
+        const selected = pick.value;
+        const upstream = selected === "__strict_auto" ? "" : selected;
+        const noFallback = selected === "__strict_auto" || !!upstream;
+        pick.disabled = true;
+        try {
+          await api("sessions/provider-override", { agent: "codex", session: s.id, provider: upstream, no_fallback: noFallback });
+          s.route_provider = upstream;
+          s.no_fallback = noFallback;
+          status(t(upstream ? "Session pinned to {provider} (no fallback)" : noFallback ? "Automatic · no fallback" : "Session returned to automatic routing", { provider: upstream }), "ok");
+        } catch (err) {
+          pick.value = before;
+          status(err.message, "err");
+        } finally {
+          pick.disabled = false;
+        }
+      };
+      line(t("Routing provider"), pick);
+      line(t("Fallback"), t(s.no_fallback ? "Disabled for this session" : "Inherit Magpie routing policy"));
+    }
     if (s.resume) line(t("Resume"), el("code", "", s.resume), copyBtn(s.resume, t("Resume command")));
     for (const c of s.carry || []) {
       const agent = agentOf(c.agent).name;

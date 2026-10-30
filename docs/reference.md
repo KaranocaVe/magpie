@@ -1492,6 +1492,37 @@ as broken. An image model is the exception that follows the rule above: it is
 tested by the name magpie knows it by, on the images API and on the chat it
 falls back to, because that is how a drawing is asked for.
 
+### Codex session-specific provider routing
+
+Magpie's **Sessions → Codex → [session] → Routing provider** controls the
+upstream used by one conversation. This is **not** Codex's `model_provider`:
+the Codex rollout, app-server state database, history, thread ID, and model
+catalog stay unchanged. An override is stored in Magpie's own
+`session-provider-overrides.json` beside `settings.json`.
+
+- **Automatic (Magpie routing)** is the default for sessions without a
+  recorded override: groups, affinity and configured fallbacks work as before.
+- **Automatic · no fallback** lets Magpie choose the first eligible route
+  according to the existing group, quota, rules and session affinity, but does
+  not try another upstream if that attempt fails.
+- **A named provider** strictly locks the session to that provider: a group
+  request resolves its matching member (including the provider's model alias).
+  If the provider is unavailable or doesn't serve the requested model, Magpie
+  returns an error rather than silently changing channels. No fallback is
+  permitted. Because the pin is to a **provider**, not an individual API key,
+  account rotation under the provider is unaffected by the initial selection;
+  no second account is tried after a failure under this session's strict policy.
+
+The setting applies only to **Codex requests carrying a recognized session
+ID**. Other sessions and agents keep their own routing; Codex's official-backend
+and sealed-task compatibility checks remain in force. The Sessions page uses
+`POST /api/sessions/provider-override` with
+`{"agent":"codex","session":"<id>","provider":"<provider-id>","no_fallback":true}`.
+For strict automatic routing, use an empty provider with `no_fallback:true`.
+For a return to the regular automatic policy, send an empty provider with
+`no_fallback:false`. Session IDs have to be preserved by the client, and
+the policy must be managed on the gateway machine actually serving the request.
+
 ### Routing groups
 
 A routing group is several models, from one provider or many, that an agent

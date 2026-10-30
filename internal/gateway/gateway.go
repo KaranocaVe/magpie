@@ -2009,6 +2009,34 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// any Claude Code subagent's turn, moved or not, for the Routing page's tag
 	subagentID := subagentTurnOf(r, call.Kind, body, desktopPick != nil || subagentEffort != "")
 	p, model, ok := provider.Resolve(asked)
+	// Per-session manual routing overrides a routing group's automatic pick
+	// without changing Codex's model_provider or any rollout history.
+	// An absent override follows all existing routing logic unchanged.
+	sessionPinned := ""
+	if usage.AgentOf(call.Agent) == "codex" {
+		var err error
+		sessionPinned, err = provider.SessionProviderFor("codex", sessionOf(r.Header))
+		if err != nil {
+			call.Status, call.Error = 500, "session provider overrides unreadable"
+			writeError(w, from, 500, err.Error())
+			turnedAway()
+			return
+		}
+	}
+	if sessionPinned != "" {
+		var err error
+		if !ok {
+			err = fmt.Errorf("session locked to %q: requested model %q is unknown", sessionPinned, asked)
+		} else {
+			p, model, asked, err = pinnedSessionRoute(asked, p, model, sessionPinned)
+		}
+		if err != nil {
+			call.Status, call.Error = 409, "session provider override unavailable"
+			writeError(w, from, 409, err.Error())
+			turnedAway()
+			return
+		}
+	}
 	// a model the user disabled (#1867) — asked by its id, the model a
 	// sub-agent was put on, a group with every model in it disabled — is
 	// refused here, before anything is sent anywhere; a group with one
@@ -2088,6 +2116,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		} else {
 			capture.ResponseWriter, body, unmask, maskedHits = rw, b, done, hits
 		}
+	}
+	// A privacy rule may have replaced the selected route above. It must
+	// not quietly bypass a session's explicit no-fallback provider choice.
+	if sessionPinned != "" {
+		if p.ID != sessionPinned {
+			call.Status, call.Error = 409, "session provider override conflicts with privacy route"
+			writeError(w, from, 409, fmt.Sprintf("session is locked to %q; the privacy rule routes to %q", sessionPinned, p.ID))
+			turnedAway()
+			return
+		}
+		p.Fallback = nil
 	}
 	if sentWhole && usage.ObservedBodies() != usage.NoBodies {
 		call.maskIn = &laterMasked{ctx: context.WithoutCancel(r.Context()), plain: body}
@@ -2572,6 +2611,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.record(call)
 			return
 		}
+	}
+	// Defense in depth: keep any transport-specific or synthetic fallback
+	// candidate out, even if later planning starts adding new kinds.
+	if sessionPinned != "" {
+		cands = slices.DeleteFunc(cands, func(c candidate) bool { return c.p.ID != sessionPinned })
 	}
 	// a member whose model is known to take less than the request isn't
 	// asked: it would only refuse it. Those left out are the last resort,

@@ -68,6 +68,24 @@ func SessionProviderFor(agent, session string) (string, error) {
 	return "", nil
 }
 
+// SessionProvidersFor snapshots every override of one agent for the Sessions
+// page. A bulk read avoids one disk read per session in a large list.
+func SessionProvidersFor(agent string) (map[string]string, error) {
+	sessionOverrideMu.Lock()
+	defer sessionOverrideMu.Unlock()
+	entries, err := readSessionOverrides()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string)
+	for _, entry := range entries {
+		if entry.Agent == agent {
+			out[entry.Session] = entry.Provider
+		}
+	}
+	return out, nil
+}
+
 // SetSessionProviderFor sets a strict provider pin, or removes it when id is
 // empty ("auto"). This modifies Magpie alone, never Codex rollout metadata.
 func SetSessionProviderFor(agent, session, id string) error {

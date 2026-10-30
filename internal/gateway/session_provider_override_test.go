@@ -75,3 +75,30 @@ func TestCodexSessionPinNeverFallsBackAndAutoSessionStillDoes(t *testing.T) {
 		t.Fatalf("clearing pin must restore automatic routing: status %d body %s", code, body)
 	}
 }
+
+func TestCodexStrictAutomaticRoutingWithoutFallback(t *testing.T) {
+	plan := &fake{t: t, ctype: "application/json", code: 429, reply: `{"error":{"message":"rate limited"}}`}
+	spare := &fake{t: t, ctype: "application/json", reply: `{"id":"from-spare","choices":[]}`}
+	twoProviders(t, plan, spare)
+	if err := provider.SetSessionProviderRouteFor("codex", "strict-auto", "", true); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := provider.SessionRouteFor("codex", "strict-auto")
+	if err != nil || policy.Provider != "" || !policy.NoFallback {
+		t.Fatalf("strict automatic policy not persisted: %+v %v", policy, err)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq))
+	req.Header.Set("User-Agent", "codex_cli_rs/0.162.0")
+	req.Header.Set(SessionHeader, "strict-auto")
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code == 200 || spare.calls != 0 {
+		t.Fatalf("strict-auto must not fail over: %d %s, spare calls %d", rec.Code, rec.Body.String(), spare.calls)
+	}
+	if err := provider.SetSessionProviderRouteFor("codex", "strict-auto", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if policy, err := provider.SessionRouteFor("codex", "strict-auto"); err != nil || policy.NoFallback {
+		t.Fatalf("cleared automatic policy: %+v %v", policy, err)
+	}
+}

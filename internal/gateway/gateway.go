@@ -2012,16 +2012,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// Per-session manual routing overrides a routing group's automatic pick
 	// without changing Codex's model_provider or any rollout history.
 	// An absent override follows all existing routing logic unchanged.
-	sessionPinned := ""
+	sessionPinned, sessionStrict := "", false
 	if usage.AgentOf(call.Agent) == "codex" {
-		var err error
-		sessionPinned, err = provider.SessionProviderFor("codex", sessionOf(r.Header))
+		policy, err := provider.SessionRouteFor("codex", sessionOf(r.Header))
 		if err != nil {
 			call.Status, call.Error = 500, "session provider overrides unreadable"
 			writeError(w, from, 500, err.Error())
 			turnedAway()
 			return
 		}
+		sessionPinned, sessionStrict = policy.Provider, policy.NoFallback || policy.Provider != ""
 	}
 	if sessionPinned != "" {
 		var err error
@@ -2755,6 +2755,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				}
 			}
 		}()
+	}
+	// A strict-auto session still lets the current routing policy choose its
+	// first upstream (group weighting, quota, rules and affinity included),
+	// but it must not switch to another candidate after a failure. The same
+	// rule applies to a manually pinned session, including other keys of
+	// the pinned provider. Transport retries of that one candidate remain.
+	if sessionStrict && len(cands) > 1 {
+		cands = cands[:1]
 	}
 	for i := 0; i < len(cands); i++ {
 		c := cands[i]

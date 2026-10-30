@@ -4,6 +4,9 @@ magpie.strings({
   zh: {
     "Routing provider": "会话路由 Provider",
     "Automatic (Magpie routing)": "自动路由（Magpie）",
+    "Automatic · no fallback": "自动路由 · 禁止回退",
+    "Disabled for this session": "此会话禁止回退",
+    "Inherit Magpie routing policy": "继承 Magpie 路由策略",
     "Pinned: {provider}": "锁定：{provider}",
     "Strict session provider override: automatic fallback disabled": "会话级严格锁定：禁止自动回退到其他 Provider",
     "Pinned provider: no fallback to any other upstream": "锁定指定 Provider，不回退到其他上游",

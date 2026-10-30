@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -35,7 +36,8 @@ type manageAgentJSON struct {
 // too, #752) with where magpie's gateway sent its calls
 type managedJSON struct {
 	sessions.Managed
-	Via []usage.Via `json:"via,omitempty"`
+	Via           []usage.Via `json:"via,omitempty"`
+	RouteProvider string      `json:"route_provider,omitempty"` // Magpie upstream pin, not Codex model_provider
 }
 
 // listedGateway are the gateway sessions the session lists show: not those
@@ -49,6 +51,11 @@ func listedGateway(gs []usage.GatewaySession) []usage.GatewaySession {
 		}
 	}
 	return out
+}
+
+type routeProviderOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type trashedJSON struct {
@@ -83,6 +90,22 @@ func trashJSON(looks map[string]*agent.Agent) []trashedJSON {
 
 func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 	sessionReadsRoutes(mux)
+	mux.HandleFunc("POST /api/sessions/provider-override", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent    string `json:"agent"`
+			Session  string `json:"session"`
+			Provider string `json:"provider"` // empty means automatic routing
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 4096)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetSessionProviderFor(in.Agent, in.Session, in.Provider); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"agent": in.Agent, "session": in.Session, "provider": in.Provider})
+	})
 	mux.HandleFunc("POST /api/sessions/relocate-claude", func(rw http.ResponseWriter, r *http.Request) {
 		var in sessions.ClaudeRelocation
 		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 16384)).Decode(&in); err != nil {
@@ -126,6 +149,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			Agents   []manageAgentJSON `json:"agents"`
 			Agent    string            `json:"agent"`
 			Sessions []managedJSON     `json:"sessions"`
+			Providers []routeProviderOption `json:"route_providers"`
 			Terminal bool              `json:"terminal"`
 			Trash    []trashedJSON     `json:"trash"`
 			TrashDir string            `json:"trashDir"`
@@ -137,7 +161,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			// Reads: which agents' own sessions magpie may read; the page
 			// asks first when nothing is decided (asked false)
 			Reads readsJSON `json:"reads"`
-		}{Reads: readsNow(), Agents: []manageAgentJSON{}, Sessions: []managedJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
+		}{Reads: readsNow(), Agents: []manageAgentJSON{}, Sessions: []managedJSON{}, Providers: []routeProviderOption{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
 			Trash: trashJSON(looks), TrashDir: tilde(sessions.TrashDir()), Recording: settings.Load().GatewayConversations,
 			Recorded: sessions.HasGatewayConversations()}
 		out.Home, _ = os.UserHomeDir()
@@ -193,6 +217,20 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 		})
 		out.Agent = view.Agent
 		if out.Agent != "" {
+			pins := map[string]string{}
+			if out.Agent == "codex" {
+				var err error
+				pins, err = provider.SessionProvidersFor("codex")
+				if err != nil {
+					fail(rw, err)
+					return
+				}
+				for _, p := range provider.All() {
+					if p.On() {
+						out.Providers = append(out.Providers, routeProviderOption{ID: p.ID, Name: p.Name})
+					}
+				}
+			}
 			list := view.Sessions
 			var modelEffort map[string][]sessions.ModelEffort
 			if out.Agent == "codex" {
@@ -219,7 +257,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			vias := usage.Vias(since.Add(-time.Minute))
 			for _, s := range list {
 				s.Path = tilde(s.Path)
-				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: viaOf(vias, s.Session)})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: viaOf(vias, s.Session), RouteProvider: pins[s.ID]})
 			}
 			sizes := sessions.GatewaySizes()
 			for _, g := range gateway {
@@ -230,7 +268,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 				addCodexModelEffort(&s, modelEffort)
 				// its size is the conversation text magpie recorded of it
 				m := sessions.Managed{Session: s, Deletable: true, Size: sizes(s.Agent, s.ID)}
-				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias.Of(s.Agent + "|" + s.ID)})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias.Of(s.Agent + "|" + s.ID), RouteProvider: pins[s.ID]})
 			}
 			sort.SliceStable(out.Sessions, func(i, j int) bool {
 				return out.Sessions[i].Last.After(out.Sessions[j].Last)

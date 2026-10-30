@@ -88,21 +88,12 @@ type Provider struct {
 	// the Anthropic base is the root (what ANTHROPIC_BASE_URL takes).
 	Chat      string `json:"chat,omitempty"`
 	Responses string `json:"responses,omitempty"`
-	// SealGroup explicitly declares that Responses providers with the same non-empty
-	// value can open each other's sealed Codex subagent tasks. Set it only when the
-	// upstreams share a sealing/decryption backend; it is an operator assertion.
+	// SealGroup is a user-declared sealing/decryption compatibility identity.
 	SealGroup string `json:"sealGroup,omitempty"`
-
-	// AllowCrossProviderSealedTasks opts this provider into sharing sealed Codex
-	// subagent tasks with other providers that also opt in. Enable it only when
-	// they share a sealing/decryption backend; both providers must opt in.
+	// AllowCrossProviderSealedTasks opts a provider in to sharing sealed Codex subagent tasks.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
-
-	// RoutesToOfficialCodexBackend asserts that this provider's upstream chain
-	// ultimately reaches OpenAI's official Codex backend, which can open its
-	// sealed subagent tasks across otherwise distinct shallow providers.
+	// RoutesToOfficialCodexBackend declares that the final upstream is OpenAI Codex.
 	RoutesToOfficialCodexBackend bool `json:"routesToOfficialCodexBackend,omitempty"`
-
 	Anthropic string `json:"anthropic,omitempty"`
 	// Gemini is the base of Google's Gemini API, or of one that answers as
 	// it does (…/v1beta): models/{model}:streamGenerateContent is asked
@@ -227,9 +218,16 @@ type Provider struct {
 	// a price the user set for one of its models stands as set. 0 is the
 	// price as listed; at most three decimals (PriceRateOK).
 	PriceRate float64 `json:"priceRate,omitempty"`
+	// RateWindows are the time-of-day windows it bills at its own rate
+	// (#2463): a peak at 2× or 3×, a discount off peak. The first window
+	// that holds a call's time multiplies the price again, on top of
+	// PriceRate; outside every window the price rate alone counts. At
+	// most RateWindowsMax of them (CheckRateWindows).
+	RateWindows []RateWindow `json:"rateWindows,omitempty"`
 
-	// Headers are extra HTTP request headers sent to the vendor, exactly as
-	// the user typed them. They ride on every request magpie makes to a plain
+	// Headers are extra HTTP request headers sent to the vendor, as the user
+	// typed them but for ${sessionId} and ${threadId} in a value, the
+	// request's conversation ids (SentHeaders, conversation.go). They ride on every request magpie makes to a plain
 	// key+URL provider — forwarded calls, connectivity tests, and model-list
 	// fetches — applied after the auth headers, so the user can override those
 	// when a gateway insists on a private scheme. Signed-in agent accounts
@@ -238,9 +236,18 @@ type Provider struct {
 
 	// ExtraBody are JSON fields added to the body of every request to the
 	// vendor (#1604), filling in what the body lacks, or replacing it for a
-	// name written "!name"; ${sessionId} in a value is the conversation's
-	// id (extrabody.go). Signed-in agent accounts ignore it, as Headers.
+	// name written "!name"; ${sessionId} and ${threadId} in a value are the
+	// conversation's ids (extrabody.go, conversation.go). Signed-in agent accounts ignore it, as Headers.
 	ExtraBody ExtraBody `json:"extraBody,omitempty"`
+
+	// ReplyHeaders are headers of the vendor's reply passed on to the
+	// agent, beside DefaultReplyHeaders, whatever their case (#4145): a
+	// relay's own request id (X-Oneapi-Request-Id), for the agent's side
+	// to match with the relay's logs. Streamed or whole, an error too, on
+	// every API, translated or not; only the reply the agent is given
+	// has its headers passed on. One magpie writes itself, or that would
+	// act on magpie's address, never is (ReplyHeaderPassable).
+	ReplyHeaders []string `json:"replyHeaders,omitempty"`
 
 	// Searches says the vendor answers a web search tool offered on its
 	// Anthropic or Responses API by itself (web_search_20250305,
@@ -427,6 +434,14 @@ type Provider struct {
 	// are still read and shown. Without it, no picks is the vendor's list
 	// as ever, so a file saved before it reads as it did. A pick clears it.
 	NoModels bool `json:"noModels,omitempty"`
+	// BestInFamily is the editor's Best in family (Steven on Discord): with
+	// no Models picked, of the vendor's list only the newest model of each
+	// family is served (catalog.BestInFamily), so Opus 5.6, once listed,
+	// takes Opus 5.5's place by itself. A request that names another of its
+	// models is still served, as one that names a model left unpicked is. A
+	// pick or Select none clears it (normalize); a file without it reads as
+	// the vendor's list, as before.
+	BestInFamily bool `json:"bestInFamily,omitempty"`
 	// PickedFrom are the models the vendor listed when Models were saved: one
 	// listed since is served beside picks that held every one listed then
 	// (withNewlyListed), and one listed then and left unpicked stays out.
@@ -669,7 +684,7 @@ func All() []Provider {
 	// round every 30s), most of an idle magpie's CPU (xsw on Discord)
 	off := sync.OnceValue(func() bool { return settings.AccountDiscoveryOffIn(heldSettings()) })
 	for _, p := range held {
-		if p.Account != nil && off() {
+		if p.Account != nil && off() && !p.publicAccount() {
 			continue
 		}
 		out = append(out, p.clone()) // callers change theirs, Keys[i] and Headers included
@@ -689,6 +704,7 @@ func (p Provider) clone() Provider {
 	p.AutoInclude = slices.Clone(p.AutoInclude)
 	p.Headers = maps.Clone(p.Headers)
 	p.ExtraBody = maps.Clone(p.ExtraBody)
+	p.ReplyHeaders = slices.Clone(p.ReplyHeaders)
 	p.AccountProxies = maps.Clone(p.AccountProxies)
 	p.AccountCaps = maps.Clone(p.AccountCaps)
 	p.AccountNames = maps.Clone(p.AccountNames)
@@ -771,7 +787,7 @@ func withPicks(a, pk Provider) Provider {
 	a.PickedFrom, a.Delisted = pk.PickedFrom, pk.Delisted
 	a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
 	a.SwitchOnly = pk.SwitchOnly
-	a.Sink, a.NoModels = pk.Sink, pk.NoModels
+	a.Sink, a.NoModels, a.BestInFamily = pk.Sink, pk.NoModels, pk.BestInFamily
 	a.NativeCompaction = pk.NativeCompaction
 	a.PromptAsWritten = pk.PromptAsWritten
 	a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
@@ -781,14 +797,19 @@ func withPicks(a, pk Provider) Provider {
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
 	a.MaxRPM = pk.MaxRPM
-	// and what it bills against the official price (#819): an account's
-	// editor sets it as a key provider's does (PaulT on Discord, Codex)
+	// what it bills against the official price (#819): an account's editor
+	// sets it as a key provider's does (PaulT on Discord, Codex)
 	a.PriceRate = pk.PriceRate
+	// the hours the provider bills at its own rate (#2463), as the editor
+	// keeps them for the account like the rest of these
+	a.RateWindows = pk.RateWindows
 	// the extra body fields written for it, which a ChatGPT account's
 	// requests take (WithExtraBody, magpie-releases#18)
 	a.ExtraBody = pk.ExtraBody
-	// and the image models unticked in its editor (HiddenDrawers)
+	// the image models unticked in its editor (HiddenDrawers)
 	a.HiddenDrawers = pk.HiddenDrawers
+	// and the headers of its replies passed on (#4145)
+	a.ReplyHeaders = pk.ReplyHeaders
 	return a
 }
 
@@ -916,7 +937,7 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, HiddenDrawers: p.HiddenDrawers, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, BestInFamily: p.BestInFamily, RateWindows: p.RateWindows, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, HiddenDrawers: p.HiddenDrawers, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
 	} else {
 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
@@ -1371,6 +1392,9 @@ func normalize(p Provider) Provider {
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}
+	if len(p.Models) > 0 || p.NoModels {
+		p.BestInFamily = false // nor Best in family
+	}
 	p.ZhipuTeam = p.ZhipuTeam.normal()
 	p.Vertex = p.Vertex.Normal()
 	if !p.IsVertex() {
@@ -1477,6 +1501,7 @@ func normalize(p Provider) Provider {
 	// endpoints and catalog, the headers say which workspace or app it is
 	p.Headers = cleanHeaders(p.Headers)
 	p.ExtraBody = cleanExtraBody(p.ExtraBody)
+	p.ReplyHeaders = cleanReplyHeaders(p.ReplyHeaders)
 	if pr := Preset(p.Preset); pr != nil {
 		if p.Icon == "" {
 			p.Icon = pr.Icon
@@ -1583,6 +1608,11 @@ func (p Provider) Base(proto Protocol) string {
 	case Responses:
 		return p.Responses
 	case Anthropic:
+		// Vertex AI's Claude models, on Anthropic's Messages API at the
+		// project, each at a path of its own (VertexClaudeRequest)
+		if p.IsVertex() {
+			return p.vertexBase()
+		}
 		return p.Anthropic
 	case CodeAssist:
 		if p.Account != nil {
@@ -1622,8 +1652,9 @@ func (p Provider) Speaks() []Protocol {
 	// list stays on the other three (factoryAPIs); this is not one of them.
 	// A custom provider's Gemini API comes after the others it has.
 	// Vertex AI's Gemini models, on generateContent at its project, after
-	// the chat completions its partner models are served on (ListedAPIs
-	// gives each model its one).
+	// the chat completions its partner models are served on and the
+	// Messages API its Claude models are (ListedAPIs gives each model its
+	// one).
 	if p.IsVertex() {
 		if p.vertexBase() != "" {
 			out = append(out, Gemini)

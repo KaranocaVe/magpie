@@ -36,6 +36,12 @@ const (
 	// lately — first token, then how fast it wrote — first; one not
 	// measured lately gets a turn now and then to be (routes.Fastest).
 	Fastest = "fast"
+	// Cheapest goes by price: the member whose model costs least at the
+	// request's time first — its vendor's peak hours and the provider's
+	// rate windows read then — those alike in their listed order
+	// (routes.Cheapest). A group's only: a provider's keys and accounts
+	// all bill its one price.
+	Cheapest = "cheap"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -106,7 +112,10 @@ func SetKeepLogin(id string, keep bool) error {
 	if p.Account == nil || p.Account.Agent != p.ID || !slices.Contains(switchedAgents, p.ID) {
 		return fmt.Errorf("magpie doesn't sign %s in to another of its accounts", p.Name)
 	}
-	chosen := p.KeepLogin && p.KeepLoginAs != ""
+	if keep && p.SwitchOnly {
+		return errSwitchOnly(*p)
+	}
+	chosen := p.keepsLogin() && p.KeepLoginAs != ""
 	p.KeepLogin, p.KeepLoginAs = keep, ""
 	if err := Save(*p); err != nil {
 		return err

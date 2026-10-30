@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
@@ -42,6 +43,7 @@ type modelJSON struct {
 	ImageSet   bool     `json:"imageSet,omitempty"`  // the user said so, rather than its vendor
 	Own        bool     `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
 	On         bool     `json:"on"`                  // exposed to agents
+	Best       bool     `json:"best,omitempty"`      // the newest of its family in the list: what Best in family serves (provider.NewestInFamily)
 	Context    int      `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
 	Output     int      `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
 	Listed     int      `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
@@ -87,6 +89,8 @@ type providerJSON struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	// JSON fields added to each request's body (provider.ExtraBody, #1604)
 	ExtraBody provider.ExtraBody `json:"extraBody,omitempty"`
+	// headers of the vendor's reply passed on (provider.ReplyHeaders, #4145)
+	ReplyHeaders []string `json:"replyHeaders,omitempty"`
 	// the API the user gave a custom provider's Base URL as (BaseAPI)
 	BaseAPI string `json:"baseAPI,omitempty"`
 	// the vendor searches the web by itself (provider.Searches)
@@ -241,6 +245,13 @@ type providerJSON struct {
 	// how many requests each key or account sends the vendor in any
 	// minute, 0 for no limit (coeo91 on Discord)
 	MaxRPM int `json:"maxRPM,omitempty"`
+	// RateWindows are the time-of-day windows it bills at its own rate
+	// (#2463), as the editor opens on them
+	RateWindows []provider.RateWindow `json:"rateWindows,omitempty"`
+	// RateNow is what it bills at now, the price rate times the window
+	// of the hour (rateNowOf), 0 for 1×: read on this computer's clock,
+	// which calls are counted on, not the browser's
+	RateNow float64 `json:"rateNow,omitempty"`
 	// what it charges against the official price, 0 for that (#819)
 	PriceRate float64     `json:"priceRate,omitempty"`
 	Models    []modelJSON `json:"models"`            // everything the vendor lists, exposed ones flagged
@@ -251,6 +262,9 @@ type providerJSON struct {
 	HiddenDrawers []string `json:"hiddenDrawers,omitempty"`
 	Unlisted      bool     `json:"unlisted"` // its models serve only through routing groups
 	NoModels      bool     `json:"noModels"` // Select none: none of its models served (#1818)
+	// Best in family: with nothing picked, only the newest model of each
+	// family it lists is served (provider.Provider.BestInFamily)
+	BestInFamily bool `json:"bestInFamily"`
 	// Groups are the routing groups ("group/<id>") each of its models is
 	// in, by model id: what an unlisted one is still used through, and the
 	// editor names those in none
@@ -270,10 +284,8 @@ type providerJSON struct {
 	// Move is where a built-in subscription stands with the community
 	// plugin that can run it (provider.Move): set for those that have one
 	Move *moveJSON `json:"move,omitempty"`
-
-	// AllowCrossProviderSealedTasks is the provider editor's explicit opt-in.
+	// User-declared sealed task compatibility for Responses providers.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
-	// RoutesToOfficialCodexBackend marks providers whose upstream chain ends at OpenAI's official Codex backend.
 	RoutesToOfficialCodexBackend bool `json:"routesToOfficialCodexBackend,omitempty"`
 }
 
@@ -405,6 +417,11 @@ type providerAgent struct {
 	Current bool   `json:"current"` // this agent is on one of this provider's models now
 	Model   string `json:"model,omitempty"`
 	Group   string `json:"group,omitempty"` // through this routing group, one of whose members it is
+	// Hides are this provider's models (by model id) the agent's own model
+	// list leaves out, set on the Agents page (provider.ModelOff): the
+	// editor's model picks are every agent's, so it says which agent
+	// doesn't show one it has ticked (Kylin_Cloud on X)
+	Hides []string `json:"hides,omitempty"`
 }
 
 type presetJSON struct {
@@ -554,12 +571,23 @@ type agentUse struct {
 	group      provider.Group
 	members    []provider.Member
 	inGroup    bool
+	// off is the agent's own model list's picks (provider.ModelOff), nil
+	// when it leaves nothing out, or another agent sharing its list (a WSL
+	// one, an omp profile) says it already
+	off func(id string) bool
 }
 
 func agentUses(agents []*agent.Agent, findGroup func(string) (provider.Group, []provider.Member, bool)) []agentUse {
 	out := make([]agentUse, 0, len(agents))
+	lists := map[string]bool{}
 	for _, a := range agents {
 		u := agentUse{Agent: a}
+		if id := a.ListsFor(); !lists[id] {
+			lists[id] = true
+			if _, only := provider.PickedModels(id); only || len(provider.HiddenModels(id)) > 0 {
+				u.off = provider.ModelOff(id)
+			}
+		}
 		v := agentModel(a)
 		if provider.IsGroupRef(v) {
 			u.group, u.members, u.inGroup = findGroup(v)
@@ -610,10 +638,11 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, RoutesToOfficialCodexBackend: p.RoutesToOfficialCodexBackend, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), LimitRestOff: p.LimitRestOff, NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
+		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
 		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
 	}
@@ -729,6 +758,11 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 	for _, m := range p.Exposed() {
 		exposed[m.ID] = true
 	}
+	avail := p.Available()
+	newest := map[string]bool{}
+	for _, m := range p.NewestInFamily(avail) {
+		newest[m.ID] = true
+	}
 	seen := map[string]bool{}
 	names, kept := p.ModelNames(), p.ModelEfforts()
 	held := settings.Load()
@@ -754,7 +788,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 			images = said
 		}
 		window := p.WindowOf(m)
-		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
+		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own, Best: newest[m.ID]}
 		if i := slices.IndexFunc(most, func(c catalog.Model) bool { return c.ID == m.ID }); j.Max == 0 && i >= 0 {
 			j.Max = most[i].MaxContext
 		}
@@ -786,6 +820,12 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 			j.List, j.RemoteList = &pr, p.RemotePriced(m.ID)
 		} else if pr, ok := provider.MakerPrice(m.ID); ok {
 			j.List = &pr
+		}
+		if j.List != nil {
+			// an off-peak price, doubled at peak hours: the editor says so
+			if k := p.PeakOf(m.ID); k != "" {
+				j.List.Peak = k
+			}
 		} else if pr, ok := provider.SamePriceIn(held, p.ID, m.ID); ok {
 			j.List = &pr // the model it is the same as, beside it (#2344)
 		}
@@ -801,7 +841,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		}
 		return j
 	}
-	for _, m := range p.Available() {
+	for _, m := range avail {
 		seen[m.ID] = true
 		out.Models = append(out.Models, named(m, exposed[m.ID]))
 	}
@@ -850,6 +890,13 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 				if m.Provider.ID == p.ID {
 					pa.Current, pa.Model, pa.Group = true, m.Model, a.group.Name
 					break
+				}
+			}
+		}
+		if a.off != nil {
+			for _, m := range out.Models {
+				if a.off(p.ID + "/" + m.ID) {
+					pa.Hides = append(pa.Hides, m.ID)
 				}
 			}
 		}
@@ -1202,6 +1249,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// Limit, for accountconcurrency: the account's or key's own
 			// limit, 0 for none, null for the provider's (#892)
 			Limit *int `json:"limit"`
+			// RateWindows are the time-of-day windows it bills at its own
+			// rate (#2463); a list as checked (CheckRateWindows), null or
+			// [] for none; left out, they are kept
+			RateWindows json.RawMessage `json:"rateWindows"`
 			// PriceRate is what it charges against the official price
 			// (#819): a number, null or 0 for none; left out, it is kept
 			PriceRate    json.RawMessage `json:"priceRate"`
@@ -1263,6 +1314,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// as Codex sent it (provider.Provider.NativeCompaction); a save
 			// that leaves it out keeps it
 			NativeCompaction *bool `json:"nativeCompaction"`
+			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
+			RoutesToOfficialCodexBackend *bool `json:"routesToOfficialCodexBackend"`
 			// AuthHeader, for save: which header the key goes in on a
 			// third-party Anthropic API (provider.Provider.AuthHeader); a
 			// save that leaves it out keeps it, one learned too
@@ -1273,6 +1326,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// As, for test: the agent the request is asked as
 			// (provider.TestAs: "codex", "claude-code"), "" as magpie
 			As string `json:"as"`
+			// Run, for test and teststop: the window's name for one
+			// test, which its Stop ends (testRuns)
+			Run string `json:"run"`
 			// DetectModels, for detect: models to ask on each API, each
 			// answered on its own, in place of Model
 			DetectModels []string `json:"detectModels"`
@@ -1303,13 +1359,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NoModels, for save: the editor's Select none, kept with no
 			// model picked (#1818); a save that leaves it out keeps it
 			NoModels *bool `json:"noModels"`
-
-			// AllowCrossProviderSealedTasks is an explicit per-provider opt-in;
-			// a save that leaves it out keeps the existing value.
-			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
-			// RoutesToOfficialCodexBackend is an explicit per-provider declaration;
-			// a save that leaves it out keeps the existing value.
-			RoutesToOfficialCodexBackend *bool `json:"routesToOfficialCodexBackend"`
+			// BestInFamily, for save: the editor's Best in family, kept
+			// with no model picked; a save that leaves it out keeps it
+			BestInFamily *bool `json:"bestInFamily"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			fail(rw, err)
@@ -1318,6 +1370,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		in := req.Provider
 		if req.NoModels != nil {
 			in.NoModels = *req.NoModels
+		}
+		if req.BestInFamily != nil {
+			in.BestInFamily = *req.BestInFamily
 		}
 		if req.Routing != nil {
 			in.Routing = *req.Routing
@@ -1416,7 +1471,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Key, pr.Models, pr.Fallback, pr.Headers, pr.BalanceToken, pr.Contexts = in.Key, in.Models, in.Fallback, in.Headers, in.BalanceToken, in.Contexts
 				pr.ZhipuTeam = in.ZhipuTeam
 				pr.NoModels = in.NoModels
+				pr.BestInFamily = in.BestInFamily
 				pr.ExtraBody = in.ExtraBody
+				pr.ReplyHeaders = in.ReplyHeaders
 				pr.SecretAccessKey = in.SecretAccessKey
 				pr.Vertex = in.Vertex
 				pr.Searches = in.Searches
@@ -1453,6 +1510,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// fields the body can't be given are refused, not dropped
 			// unseen (#1604)
 			if why := provider.ExtraBodyOK(in.ExtraBody); why != "" {
+				fail(rw, errors.New(why))
+				return
+			}
+			// and reply headers magpie never passes on (#4145)
+			if why := provider.ReplyHeadersOK(in.ReplyHeaders); why != "" {
 				fail(rw, errors.New(why))
 				return
 			}
@@ -1493,6 +1555,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 			in.PriceRate = rate
+			wins, keepWins, err := rateWindowsOf(req.RateWindows)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			if !keepWins {
+				in.RateWindows = wins
+			}
 			// many keys pasted into the key field (361 on Discord: a provider
 			// added with hundreds): the first is the key, the others its
 			// accounts, as Paste several adds them
@@ -1579,6 +1649,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if keepRate && old != nil {
 					in.PriceRate = old.PriceRate
 				}
+				if keepWins && old != nil {
+					in.RateWindows = old.RateWindows
+				}
 				// how long its keys rest out of quota is set in
 				// providers.json or with `magpie provider quota-rest`,
 				// which the form doesn't show: kept as it was (#1772)
@@ -1644,9 +1717,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if in.ExtraBody == nil && old != nil {
 					in.ExtraBody = old.ExtraBody
 				}
+				// and the reply headers passed on: [] clears them
+				if in.ReplyHeaders == nil && old != nil {
+					in.ReplyHeaders = old.ReplyHeaders
+				}
 				// Select none likewise, while nothing is picked (#1818)
 				if req.NoModels == nil && old != nil {
 					in.NoModels = old.NoModels
+				}
+				// and Best in family (normalize drops it under a pick)
+				if req.BestInFamily == nil && old != nil {
+					in.BestInFamily = old.BestInFamily
 				}
 				// a Volcengine access key likewise: its ID kept when left
 				// out or sent blank (an editor opened before the key was
@@ -1929,11 +2010,25 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "teststop":
+			if stop, ok := testRuns.LoadAndDelete(req.Run); ok && req.Run != "" {
+				stop.(context.CancelFunc)()
+			}
+			rw.WriteHeader(http.StatusNoContent)
+			return
 		case "test":
 			p, err := provider.Find(in.ID)
 			if err != nil {
 				fail(rw, err)
 				return
+			}
+			ctx := r.Context()
+			if req.Run != "" {
+				var stop context.CancelFunc
+				ctx, stop = context.WithCancel(ctx)
+				defer stop()
+				testRuns.Store(req.Run, stop)
+				defer testRuns.Delete(req.Run)
 			}
 			saved := *p
 			if req.Typed {
@@ -1942,12 +2037,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			if len(req.Test) > 0 {
 				// an image model's test draws a picture, which takes longer
-				ctx, cancel := context.WithTimeout(provider.TestAs(r.Context(), req.As), 3*time.Minute)
+				ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 3*time.Minute)
 				defer cancel()
 				writeJSON(rw, map[string]any{"results": p.TestModels(ctx, req.Test)})
 				return
 			}
-			ctx, cancel := context.WithTimeout(provider.TestAs(r.Context(), req.As), 25*time.Second)
+			ctx, cancel := context.WithTimeout(provider.TestAs(ctx, req.As), 25*time.Second)
 			defer cancel()
 			writeJSON(rw, struct {
 				Results  []provider.Result `json:"results"`
@@ -2109,6 +2204,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		st := providersState()
 		st.Moved = moved
 		writeJSON(rw, st)
+		// the tray panel's account switch draws the kept list: a change
+		// made here is in it at once
+		keepProviders(st)
 	})
 	// How much of its allowance each of an agent's accounts has used.
 	mux.HandleFunc("GET /api/login/usage", func(rw http.ResponseWriter, r *http.Request) {
@@ -2149,6 +2247,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		st := providersState()
 		st.Moved = moved
 		writeJSON(rw, st)
+		keepProviders(st) // as a provider action's: the panel's switch draws it
 	})
 	// Codex's background app-server, left on the account before a switch
 	// or on the model list before a change (the Agents row's Restart):
@@ -2168,6 +2267,15 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			provider.DismissCodexDaemon()
 		case "dismiss-app":
 			provider.DismissCodexApp()
+		case "restart-app":
+			// the Codex app left on the account before: its app-server
+			// restarted now, after the user said yes (nb5p_hQ on X)
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+			defer cancel()
+			if err := agent.RestartSwitchedCodexApp(ctx); err != nil {
+				fail(rw, err)
+				return
+			}
 		default:
 			http.NotFound(rw, r)
 			return
@@ -2303,6 +2411,22 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		rw.WriteHeader(http.StatusNoContent)
+	})
+	// A Claude account from a setup-token (`claude setup-token`), which
+	// Claude Code takes in CLAUDE_CODE_OAUTH_TOKEN: nothing is asked of
+	// Anthropic, and the token is never echoed back.
+	mux.HandleFunc("POST /api/signin/claude-token", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Token string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		user, err := provider.AddClaudeSetupToken(in.Token)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"user": user})
 	})
 	// Accounts brought in from another tool's export (Antigravity's, from
 	// Antigravity Cockpit, Antigravity Manager, CLIProxyAPI; ChatGPT's and
@@ -2448,6 +2572,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	})
 }
 
+// testRuns: the provider tests under way by the name the window gave each
+// (Run), each with what ends it: Stop ends the test's requests to the
+// vendor, here as well as by the fetch it aborts, which WebView2 doesn't
+// end the request's context for (RIck on Discord: a test couldn't be
+// stopped)
+var testRuns sync.Map
+
 // typed is the saved provider p as the editor's form has it (in), for
 // Refresh and Test models before a Save: a key pasted to replace the saved
 // one is the one asked with, and the URLs, headers, extra body and proxy
@@ -2521,6 +2652,46 @@ func priceRateOf(raw json.RawMessage) (r float64, keep bool, err error) {
 		return 0, false, fmt.Errorf("%s, not %v", bad, *n)
 	}
 	return *n, false, nil
+}
+
+// rateWindowsOf is a save's rateWindows: keep when the save left it out,
+// none for null or an empty list, else the windows as checked
+// (CheckRateWindows).
+func rateWindowsOf(raw json.RawMessage) (ws []provider.RateWindow, keep bool, err error) {
+	if len(raw) == 0 {
+		return nil, true, nil
+	}
+	var list *[]provider.RateWindow
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, false, fmt.Errorf("rate windows are a list of windows, not %s", raw)
+	}
+	if list == nil || len(*list) == 0 {
+		return nil, false, nil
+	}
+	if bad := provider.CheckRateWindows(*list); bad != "" {
+		return nil, false, errors.New(bad)
+	}
+	return *list, false, nil
+}
+
+// rateNowOf is what p bills at at t (#2463): its price rate times the
+// rate of the window holding t, 0 when that comes to 1× or p has no
+// windows (a price rate alone is the editor's to show).
+func rateNowOf(p provider.Provider, t time.Time) float64 {
+	if len(p.RateWindows) == 0 {
+		return 0
+	}
+	r := 1.0
+	if p.PriceRate > 0 {
+		r = p.PriceRate
+	}
+	if w := p.RateAt(t); w > 0 {
+		r *= w
+	}
+	if r == 1 {
+		return 0
+	}
+	return r
 }
 
 // concurrencyOf is a save's maxConcurrency: keep when the save left it

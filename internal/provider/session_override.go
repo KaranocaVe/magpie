@@ -20,7 +20,8 @@ import (
 type SessionProviderOverride struct {
 	Agent    string `json:"agent"`
 	Session  string `json:"session"`
-	Provider string `json:"provider"`
+	Provider   string `json:"provider"`
+	NoFallback bool   `json:"noFallback,omitempty"` // also applies with automatic selection
 }
 
 var sessionOverrideMu sync.Mutex
@@ -51,36 +52,44 @@ func readSessionOverrides() ([]SessionProviderOverride, error) {
 // Read errors are returned rather than treating a corrupt configuration as
 // permission to fall back to an arbitrary upstream.
 func SessionProviderFor(agent, session string) (string, error) {
+	entry, err := SessionRouteFor(agent, session)
+	return entry.Provider, err
+}
+
+// SessionRouteFor also returns the no-fallback policy of an automatically
+// routed session: the gateway picks its first candidate as usual, then
+// refuses instead of asking another if that candidate fails.
+func SessionRouteFor(agent, session string) (SessionProviderOverride, error) {
 	if agent != "codex" || session == "" {
-		return "", nil
+		return SessionProviderOverride{}, nil
 	}
 	sessionOverrideMu.Lock()
 	defer sessionOverrideMu.Unlock()
 	entries, err := readSessionOverrides()
 	if err != nil {
-		return "", err
+		return SessionProviderOverride{}, err
 	}
 	for _, e := range entries {
 		if e.Agent == agent && e.Session == session {
-			return e.Provider, nil
+			return e, nil
 		}
 	}
-	return "", nil
+	return SessionProviderOverride{}, nil
 }
 
 // SessionProvidersFor snapshots every override of one agent for the Sessions
 // page. A bulk read avoids one disk read per session in a large list.
-func SessionProvidersFor(agent string) (map[string]string, error) {
+func SessionRoutesFor(agent string) (map[string]SessionProviderOverride, error) {
 	sessionOverrideMu.Lock()
 	defer sessionOverrideMu.Unlock()
 	entries, err := readSessionOverrides()
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]string)
+	out := make(map[string]SessionProviderOverride)
 	for _, entry := range entries {
 		if entry.Agent == agent {
-			out[entry.Session] = entry.Provider
+			out[entry.Session] = entry
 		}
 	}
 	return out, nil
@@ -89,6 +98,12 @@ func SessionProvidersFor(agent string) (map[string]string, error) {
 // SetSessionProviderFor sets a strict provider pin, or removes it when id is
 // empty ("auto"). This modifies Magpie alone, never Codex rollout metadata.
 func SetSessionProviderFor(agent, session, id string) error {
+	return SetSessionProviderRouteFor(agent, session, id, id != "")
+}
+
+// SetSessionProviderRouteFor keeps strict-auto distinct from inherited auto:
+// the latter is no entry; strict-auto records NoFallback without a provider.
+func SetSessionProviderRouteFor(agent, session, id string, noFallback bool) error {
 	if agent != "codex" || session == "" || len(session) > 128 ||
 		strings.TrimSpace(session) != session ||
 		strings.ContainsFunc(session, unicode.IsControl) {
@@ -115,8 +130,8 @@ func SetSessionProviderFor(agent, session, id string) error {
 			kept = append(kept, e)
 		}
 	}
-	if id != "" {
-		kept = append(kept, SessionProviderOverride{Agent: agent, Session: session, Provider: id})
+	if id != "" || noFallback {
+		kept = append(kept, SessionProviderOverride{Agent: agent, Session: session, Provider: id, NoFallback: noFallback || id != ""})
 	}
 	dir := settings.Dir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

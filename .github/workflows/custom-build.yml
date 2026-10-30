@@ -1,0 +1,78 @@
+name: Custom build
+run-name: Custom build — ${{ github.ref_name }} @ ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build desktop (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux
+          - runner: macos-latest
+            platform: macos
+          - runner: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK and WebKitGTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build Linux desktop app
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="custom-${GITHUB_SHA:0:7}"
+          mkdir -p dist
+          binary="magpie-linux-$(go env GOARCH)"
+          go build -tags "production gtk3" -trimpath -ldflags="-s -w -X main.version=${version}" -o "dist/${binary}" .
+          tar -czf "dist/${binary}.tar.gz" -C dist "${binary}"
+          rm "dist/${binary}"
+
+      - name: Build macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="custom-${GITHUB_SHA:0:7}"
+          make app VERSION="${version}"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent magpie.app "dist/magpie-macos-$(uname -m).zip"
+
+      - name: Build Windows desktop apps
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="custom-${GITHUB_SHA:0:7}"
+          mkdir -p dist
+          go run github.com/tc-hib/go-winres@v0.3.3 make --in build/windows/winres.json --arch amd64,arm64 --out rsrc --file-version "0.0.0" --product-version "0.0.0"
+          for arch in amd64 arm64; do
+            echo "Building windows/${arch}"
+            CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" go build -tags production -trimpath -ldflags="-s -w -X main.version=${version} -H windowsgui" -o "dist/magpie-windows-${arch}.exe" .
+          done
+          rm -f rsrc_windows_*.syso
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-custom-${{ matrix.platform }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

@@ -2,6 +2,16 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Routing provider": "会话路由 Provider",
+    "Automatic (Magpie routing)": "自动路由（Magpie）",
+    "Pinned: {provider}": "锁定：{provider}",
+    "Strict session provider override: automatic fallback disabled": "会话级严格锁定：禁止自动回退到其他 Provider",
+    "Pinned provider: no fallback to any other upstream": "锁定指定 Provider，不回退到其他上游",
+    "Fallback": "回退策略",
+    "Disabled while pinned; automatic routing otherwise": "锁定时禁止回退；未锁定时沿用自动路由",
+    "Session pinned to {provider} (no fallback)": "此会话已锁定到 {provider}（禁止回退）",
+    "Session returned to automatic routing": "此会话已恢复自动路由",
+    "unavailable": "当前不可用",
     "Show your agents' sessions?": "显示智能体的会话吗？",
     "magpie reads no agent's session history until you allow it. Pick the agents whose sessions this page may show; what magpie's gateway served is counted either way. You can change this in Settings › Privacy.": "在你允许之前，magpie 不读取任何智能体的会话历史。选择本页可以显示哪些智能体的会话；magpie 网关处理过的请求照常计入。之后可在 设置 › 隐私 中更改。",
     "No agent's sessions were found on this computer yet.": "这台电脑上还没有找到任何智能体的会话。",

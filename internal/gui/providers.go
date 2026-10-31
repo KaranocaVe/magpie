@@ -297,7 +297,7 @@ type providerJSON struct {
 	Move *moveJSON `json:"move,omitempty"`
 	// User-declared sealed task compatibility for Responses providers.
 	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
-	RoutesToOfficialCodexBackend bool `json:"routesToOfficialCodexBackend,omitempty"`
+	RoutesToOfficialCodexBackend  bool `json:"routesToOfficialCodexBackend,omitempty"`
 }
 
 type moveJSON struct {
@@ -1331,9 +1331,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NativeCompaction, for save: Codex's compaction asked of it
 			// as Codex sent it (provider.Provider.NativeCompaction); a save
 			// that leaves it out keeps it
-			NativeCompaction *bool `json:"nativeCompaction"`
+			NativeCompaction              *bool `json:"nativeCompaction"`
 			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
-			RoutesToOfficialCodexBackend *bool `json:"routesToOfficialCodexBackend"`
+			RoutesToOfficialCodexBackend  *bool `json:"routesToOfficialCodexBackend"`
 			// AuthHeader, for save: which header the key goes in on a
 			// third-party Anthropic API (provider.Provider.AuthHeader); a
 			// save that leaves it out keeps it, one learned too

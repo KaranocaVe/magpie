@@ -241,11 +241,11 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		// nor is a gone agent given the hub anew
 		hub = nil
 		if l.MCPHub && slices.Contains(a.MCP, HubEntry) && l.server(HubEntry) == nil &&
-			slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s) }) {
+			slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s, id) }) {
 			hub = hubServerFor(t)
 		}
 	}
-	hubbed := func(s *Server) bool { return hub != nil && inHub(s) }
+	hubbed := func(s *Server) bool { return hub != nil && inHub(s, id) }
 	var mine []string
 	for _, name := range a.MCP {
 		if s := l.server(name); s != nil && slices.Contains(s.Agents, id) && t.MCP.supports(s) == nil && !hubbed(s) {
@@ -297,7 +297,9 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		if !t.MCP.WSL {
 			s = npxDirect(s)
 		}
-		if run {
+		// a server the user keeps direct is started by Codex itself, in
+		// the thread's folder (#4382): magpie would start it from home
+		if run && s.Hub != HubDirect {
 			if via, spec, ok := runVia(s, base); ok {
 				if res.run == nil {
 					res.run = map[string]runSpec{}

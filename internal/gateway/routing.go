@@ -327,6 +327,12 @@ var (
 	// answer ("切换其他模型", "switch to the other models"): its limit is
 	// the model's, and the model alone rests
 	otherModels = regexp.MustCompile(`(?i)switch(?:ing)? to (?:the )?other models?|切换(?:到)?其他模型`)
+	// modelCooling is a relay that pools credentials per model saying
+	// those of the requested model cooled down: CLIProxyAPI's 429
+	// model_cooldown, "All credentials for model model-a are cooling down
+	// via provider upstream" (#3039, Welkon's relay), or OmniRoute's "All
+	// credentials for the requested model are cooling down"
+	modelCooling = regexp.MustCompile(`(?i)credentials for (?:the requested )?model .{0,200}?cooling down`)
 	// clineFreeLimit: Cline's refusal of a free model whose day's allowance
 	// is used up, 429 "Daily free limit reached on model deepseek/deepseek-
 	// v4-flash. Try again in 23h 59m", as its own clients read it (cline/
@@ -1122,6 +1128,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// as soon as the switch is off
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
+	if status == http.StatusBadGateway && bytes.Contains(body, []byte(openCodeBare)) {
+		// OpenCode's bare 400 (openCodeBareRefusal, #3740) is about the
+		// request, not the key: the key's other requests go through, so
+		// none is set aside and the failure counts nowhere
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if status == http.StatusBadRequest || status == http.StatusForbidden {
 		// a 403 too: Factory's usage policy check refuses at 403
 		// (content_policy_rejected), which failureOf alone reads as the
@@ -1144,8 +1156,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// and none to tell from: the account rests, narrowed once read (#2036)
 	unread := why == failQuota && c.p.Account != nil && len(allowances(c.p.Account.UsageAgent())[c.p.Account.User]) == 0
 	// a model the key's plan doesn't serve rests alone, counted by itself
-	// (#1235): the key's other models are still served
-	unserved := why == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body))
+	// (#1235): the key's other models are still served. So does a ZCode
+	// trial entry zcode.z.ai's firewall blocked (zcodeTrialBlocked): the
+	// account's GLM Coding Plan goes to another host
+	unserved := why == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body) || zcodeTrialBlocked(c, status, body))
 	r := Rest{Why: why, Status: status, By: "cooldown"}
 	// out of allowance or credit for as long as magpie guessed: the vendor
 	// named no time, nor did the user (asksAt)
@@ -1200,7 +1214,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			// under below; another computer's magpie rests its model
 			// for it, as before
 			id := c.restKey()
-			if c.p.PaidBesideFree(c.model) {
+			if c.p.PaidBesideFree(c.model) || modelCooledDown(why, body) {
 				id = c.restID()
 			}
 			d, r.By, r.Failures, guessed = creditBackoff(id, header, body, now)
@@ -1266,7 +1280,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			// key's own limit apart): the sink keeps the same scope, or
 			// one model's 429 would send the remote's other models, never
 			// limited, behind the others too
-			if remoteModelRest(c, failRate, header) {
+			if remoteModelRest(c, failRate, header) || modelCooledDown(failRate, body) {
 				sink(c.restID(), now)
 			} else {
 				sink(c.restKey(), now)
@@ -1388,6 +1402,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if why == failQuota && zcodeTrialRefused(c, status, body) {
 		id = c.restID()
 	}
+	// a relay's 429 that names the model whose credentials cooled down is
+	// that model's: its siblings on the same key still answer upstream,
+	// and the model's own sentence rests with the model, not on every
+	// sibling's refusal (#3039)
+	if modelCooledDown(why, body) {
+		id = c.restID()
+	}
 	// out of credit, or of a quota, on a model that costs credits where
 	// the subscription serves other models free is that model's: the free
 	// ones draw on no credits, and the account still serves them (Creat.wu
@@ -1432,6 +1453,15 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		go narrowWhenRead(c, r)
 	}
 	return r
+}
+
+// modelCooledDown is a relay's refusal of one model whose pooled
+// credentials cooled down (modelCooling): out of quota, credit or rate,
+// the limit is that model's on the relay, and the key's other models are
+// still asked (#3039). Its rest, its ladder and its sink are the model's,
+// as a remote magpie's are (remoteModelRest).
+func modelCooledDown(why string, body []byte) bool {
+	return (why == failQuota || why == failCredit || why == failRate) && modelCooling.Match(wordsOf(body))
 }
 
 // remoteModelRest says a refusal for want of quota, credit or rate rests
@@ -1539,7 +1569,7 @@ func backingOff(key string, now time.Time) bool {
 // count where it is, so one request's own retries don't stretch it.
 func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPool bool, now time.Time) (time.Duration, string, int) {
 	id := c.restKey()
-	if c.isOpenRouterFree() && sharedPool || remoteModelRest(c, failRate, header) {
+	if c.isOpenRouterFree() && sharedPool || remoteModelRest(c, failRate, header) || modelCooledDown(failRate, body) {
 		id = c.restID()
 	}
 	n := 1

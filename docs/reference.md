@@ -889,6 +889,16 @@ same model on the Qwen AI platform's pay as you go is `qwen-decision`
 Neither plan has an API for its credits: the console's subscription page
 shows them, so magpie shows no plan usage for these keys.
 
+Qwen Cloud (qwencloud.com), Alibaba's international Qwen platform, has keys
+of its own, made at home.qwencloud.com. Its pay as you go is `qwencloud`,
+at `{region}.maas.qwencloudapi.com` in six regions (`ap-southeast-1`, the
+default, `us-east-1`, `eu-central-1`, `ap-northeast-1`, `cn-hongkong` and
+`cn-beijing`), each region's `sk-ws-` key taken only there. Its Token Plan is
+`qwencloud-token-plan` (`token-plan.maas.qwencloudapi.com`, Singapore only,
+`sk-sp-` keys), with the plan's documented text models. Both serve Chat
+Completions at `/compatible-mode/v1` and Anthropic Messages at
+`/apps/anthropic`.
+
 ### Google Vertex AI
 
 Google Vertex AI (`google-vertex`), which Google's documentation now calls
@@ -1661,6 +1671,11 @@ result for every request: who went first, and why.
    of a window (100% In order). *Stays: Strict* does, and asks no other:
    the conversation stays on its account, resting, spent or past its cap,
    and its errors go to the agent.
+   With *Stays: Session* or *Strict* under Smart, Least used first or
+   Weekly pace, a new conversation goes to the account the fewest other
+   conversations of the last 30 minutes are on (of those not resting and
+   under 90%), so sessions side by side each keep an account of their own;
+   a Claude Code subagent goes with its session's account.
 
 So routing decides who goes first only for a conversation nobody has
 answered yet. An account that has used 90% goes behind the others for new
@@ -2024,8 +2039,8 @@ It exposes:
 | `/v1/models`, `/v1beta/models` | the catalog            |
 | `/v1/codex/models`       | the catalog as Codex's `model_catalog_url` reads it ([Codex on another computer](#providers-and-the-gateway)) |
 | `/api/version`, `/api/tags`, `/api/show` | the catalog as an Ollama server lists it, for a client that takes a custom endpoint only as Ollama (below) |
-| `/mcp/magpie/hub` | MCP (Streamable HTTP): every MCP server in the Library, as one server, for any app, while *Library → MCP → MCP hub* is on |
-| `/mcp/magpie/hub/{agent}` | MCP (Streamable HTTP): the Library's MCP servers ticked for that agent, as one server, while *Library → MCP → MCP hub* is on |
+| `/mcp/magpie/hub` | MCP (Streamable HTTP): every MCP server in the Library, as one server, for any app, while *Library → MCP → MCP router* is on |
+| `/mcp/magpie/hub/{agent}` | MCP (Streamable HTTP): the Library's MCP servers ticked for that agent, as one server, while *Library → MCP → MCP router* is on |
 
 With that switch on, each agent that takes an MCP server over HTTP is
 given one entry, `magpie`, in place of the Library's servers, and magpie
@@ -2038,7 +2053,7 @@ says so. An agent in WSL or on another computer is given the address it
 reaches magpie at, with its key. Turning the switch off gives every agent
 each server's own entry again. It is guarded as the gateway is: a local
 request, or one with a gateway key, and no other web page
-([MCP hub](subsystems/mcp-hub.md)).
+([MCP router](subsystems/mcp-router.md)).
 
 Each `/v1/models` entry includes `reasoning` and `supported_reasoning_levels`
 (`[{"effort":"low"}, ...]`), and the same levels as plain names in

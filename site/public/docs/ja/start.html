@@ -50,7 +50,7 @@
     <a class="toc-only" href="/docs/ja/docker">Docker</a>
     <a class="toc-only" href="/docs/ja/privacy">プライバシー</a>
     <a class="toc-only" href="/docs/ja/masking">プライバシーマスキング</a>
-    <a class="toc-only" href="/docs/ja/mcp-hub">MCP ハブ</a>
+    <a class="toc-only" href="/docs/ja/mcp-router">MCP ルーター</a>
     <a href="/docs/ja/import">magpie に追加</a>
     <a href="/docs/integrate">アプリ連携</a>
     <a href="https://github.com/yetone/magpie-releases/releases">リリース</a>
@@ -166,7 +166,7 @@
     </figure>
 
     <h3>1 つのプロバイダに複数のアカウントやキー</h3>
-    <p>プロバイダの行を開き、使うアカウントやキーをすべてチェックします。<span class="ui">Routing</span> はリクエストをそれらにどう振り分けるかを決めます：<span class="ui">Smart</span>（デフォルト）、<span class="ui">In order</span>、<span class="ui">In turn</span>、<span class="ui">Least used first</span>、<span class="ui">Weekly pace</span>、<span class="ui">Speed first</span>（最近いちばん速く応答したキーが先）。<span class="ui">Fallback</span> には、プロバイダのクォータ切れ、レート制限、ダウン時に代わりに使うモデルを並べます。</p>
+    <p>プロバイダの行を開き、使うアカウントやキーをすべてチェックします。<span class="ui">Routing</span> はリクエストをそれらにどう振り分けるかを決めます：<span class="ui">Smart</span>（デフォルト）、<span class="ui">In order</span>、<span class="ui">In turn</span>、<span class="ui">Least used first</span>、<span class="ui">Weekly pace</span>、<span class="ui">By weight</span>（各アカウントやキーが横で設定した重みで取り分を受けます。たとえば Max アカウントは 5、Pro は 1）、<span class="ui">Speed first</span>（最近いちばん速く応答したキーが先）。<span class="ui">Fallback</span> には、プロバイダのクォータ切れ、レート制限、ダウン時に代わりに使うモデルを並べます。</p>
 
     <h3>1 つのモデルを複数のプロバイダで</h3>
     <p>グループとは、1 つまたは複数のプロバイダのモデルを、エージェントが 1 つとして選べるようにまとめたものです。ピッカーの <em>Routing groups</em> の下に <code>group/&lt;id&gt;</code> として表示されます。2 つのプロバイダが同じ名前で提供しているモデルは、それだけでグループになります。<span class="ui">Routing</span> タブの <span class="ui">New group</span> では、好きなモデルを組み合わせてグループを作れます。グループで何ができるかは、最初のモデルが基準になります。</p>
@@ -185,10 +185,10 @@
     <div class="table-wrap"><table>
       <tr><th>維持</th><th>会話が、応答したアカウントやキーに留まる期間</th></tr>
       <tr><td>自動 <code>auto</code></td><td>デフォルトです。ターン内では常に、ターンをまたいでは、ベンダーがキャッシュした内容が保持する価値のある間。</td></tr>
-      <tr><td>セッション <code>session</code></td><td>応答できる限り、セッション全体。</td></tr>
+      <tr><td>セッション <code>session</code></td><td>応答できる限り、セッション全体。ルーティングがスマート、使用量の少ない順、週のペースのとき、新しいセッションは他のセッションが最も少ないアカウントやキーに割り当てられ、同時に開いたセッションはそれぞれ別のものを使います。</td></tr>
       <tr><td>ターン内 <code>turn</code></td><td>エージェントがツールの結果を返している間。あなたが再び発言すると、ルーティングが改めて決めます。</td></tr>
       <tr><td>オフ <code>off</code></td><td>リクエストごとに改めてルーティングします。</td></tr>
-      <tr><td>厳格 <code>strict</code></td><td>使用量上限を超えても、他のアカウントやキーへは移りません。レート制限や割り当て切れのときは、エラーがそのままエージェントに渡ります。新しい会話は通常どおりルーティングされます。</td></tr>
+      <tr><td>厳格 <code>strict</code></td><td>使用量上限を超えても、他のアカウントやキーへは移りません。レート制限や割り当て切れのときは、エラーがそのままエージェントに渡ります。新しい会話は「セッション」と同じく分散されます。</td></tr>
     </table></div>
     <h3 id="rules">ルール · ターンを指定したモデルへ</h3>
     <p>グループの <span class="ui">Rules</span> は、指定した種類のターンをグループ内の特定のモデルに送ります。種類とは、長いもの（<code>tokens ≥ N</code>）、画像を含むもの、推論を求めるもの（オン、または一定レベル以上）、特定のエージェントからのもの、あなたが記述した内容を求めるもの（<em>インテント</em>）、エージェントがコンテキストを圧縮するもの、特定のフォルダ（プロジェクト）で作業しているもの、です。ルールの条件はすべて満たす必要があるので、「~/work/acme 内で、かつ長い」のようにも書けます。メッセージを送ると上から順に評価され、最初に一致したルールのモデルが先頭になり、失敗したときはグループの他のモデルが後に続きます。どのルールにも一致しないターンは、グループの通常のルーティングに従い、それまでの送り先に留まります。</p>
@@ -331,7 +331,7 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     <a href="/docs/ja/docker">Docker</a>
     <a href="/docs/ja/privacy">プライバシー</a>
     <a href="/docs/ja/masking">プライバシーマスキング</a>
-    <a href="/docs/ja/mcp-hub">MCP ハブ</a>
+    <a href="/docs/ja/mcp-router">MCP ルーター</a>
     <a href="/docs/ja/import">magpie に追加</a>
     <a href="/docs/integrate">アプリ連携</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

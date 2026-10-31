@@ -275,7 +275,7 @@ type Settings struct {
 	// of their rate-limit resets by themselves once their weekly window is
 	// used up and no other account can take the request: at most one a
 	// week each (see provider.AutoUseCodexReset); and one about to run out
-	// unused half an hour before it does, or at once when the account is
+	// unused CodexResetLead before it does, or at once when the account is
 	// held up past then (provider.SpendExpiringCodexResets).
 	CodexAutoReset []string `json:"codexAutoReset,omitempty"`
 	// CodexAutoResetOnly narrows an account in CodexAutoReset to one of
@@ -285,6 +285,15 @@ type Settings struct {
 	// about to run out only. An account not in it uses one at both, as
 	// every account did before the two were split.
 	CodexAutoResetOnly map[string]string `json:"codexAutoResetOnly,omitempty"`
+	// CodexResetLead is how many minutes before a reset about to run out
+	// unused an account with CodexAutoReset's "expiring" spends it (the
+	// owner, 10-30: 把提前用卡的时间做成可配置的): from CodexResetLeadLeast
+	// to CodexResetLeadMost, 0 for CodexResetLeadDefault. Earlier loses
+	// what the windows have left then (#718), so the default is late.
+	// One for every account: whether an account spends one is its own
+	// say, how early is the same trade for each. Read through
+	// ResetLead, which takes a value out of range for the default.
+	CodexResetLead int `json:"codexResetLead,omitempty"`
 	// CodexNoCredits are the ChatGPT accounts (lower-case) that don't
 	// spend their credits: once a usage window is used up, routing holds
 	// the account as used up and goes on to the user's other accounts,
@@ -340,6 +349,12 @@ type Settings struct {
 	// real Claude Code, its billing line and identity line kept; off, as by
 	// default, the run is the shape every Claude Code run has.
 	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
+	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
+	// -p` always. Off, as by default, a run is Claude Code's interactive
+	// mode, as a person runs it, where it can be (macOS and Linux, no
+	// images, safeguards or client cache marks): the plan counts a -p
+	// request at about twice an interactive one.
+	ClaudePrintMode bool `json:"claudePrintMode,omitempty"`
 	// ClaudeRunsMost is how many Claude Code processes a Claude
 	// subscription may have running at once: conversations' runs, those
 	// waiting for a next turn or on tool results, and one-off tests and
@@ -363,6 +378,13 @@ type Settings struct {
 	// as by default, subscriptions are found as ever. This computer's own
 	// (KeepOwn), set only by its own switch or `magpie accounts discovery`.
 	NoAccountDiscovery bool `json:"noAccountDiscovery,omitempty"`
+	// SignInLinkOnly keeps an account's sign-in page out of the default
+	// browser: the window (and the command line) shows its link to copy
+	// into a browser the user picks, a separate or fingerprint browser
+	// (max2020 on Discord). Off, as by default, the page opens as ever. A
+	// plugin whose own CLI opens its page (Grok Build on macOS and
+	// Windows) still does: magpie can't stop that.
+	SignInLinkOnly bool `json:"signInLinkOnly,omitempty"`
 	// NoStats stops the one event a day that counts magpie's users (see
 	// internal/stats).
 	NoStats bool `json:"noStats,omitempty"`
@@ -449,6 +471,12 @@ type Settings struct {
 	// SearchFirstAPI for the search APIs, the provider's search after them
 	// when they fail; empty for the provider first, as before.
 	SearchFirst string `json:"searchFirst,omitempty"`
+	// SearchAll is that magpie searches for every model, one whose
+	// provider searches the web by itself too (cybercaius on Discord):
+	// the client's search is answered by the searcher and the search APIs,
+	// as for a model that can't, and the provider is sent no search tool.
+	// Only while magpie can search for it (gateway.magpieSearches).
+	SearchAll bool `json:"searchAll,omitempty"`
 	// TrayUsages are the subscriptions and plans whose windows are shown
 	// beside the tray icon, in the order shown, each by its provider and
 	// account ("claude|a@b.c"); none when empty.
@@ -656,6 +684,12 @@ type Settings struct {
 	// downloads are asked of mirrors in China first, and of their official
 	// addresses after (see source.China).
 	ChinaMirror bool `json:"chinaMirror,omitempty"`
+	// NPMRegistry is the npm registry set on the Plugins page or with
+	// `magpie plugin registry`: plugins are installed from it and npm's
+	// answers asked of it, before a registry the user's .npmrc, bunfig or
+	// shell names and before the 「国内镜像」 switch (plugin.Registry).
+	// "" leaves it to those.
+	NPMRegistry string `json:"npmRegistry,omitempty"`
 	// TextSize is how large the window's and the tray panel's pages are
 	// drawn, in percent (one of TextSizes): the webviews' own zoom, as a
 	// browser's, so the text and everything around it grow together.
@@ -1024,6 +1058,28 @@ func (s Settings) ImageWait() time.Duration {
 		m = ImageTimeoutDefault
 	}
 	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
+}
+
+// CodexResetLeadDefault is CodexResetLead's minutes when it is unset, and
+// CodexResetLeadLeast and CodexResetLeadMost the range it can be set in;
+// CodexResetLeads the choices the app and the CLI's words offer.
+const (
+	CodexResetLeadDefault = 30
+	CodexResetLeadLeast   = 15
+	CodexResetLeadMost    = 24 * 60
+)
+
+var CodexResetLeads = []int{15, 30, 60, 120, 180, 360, 720, 1440}
+
+// ResetLead is how long before a Codex reset about to run out unused it
+// is spent by itself: CodexResetLead's minutes, CodexResetLeadDefault's
+// when it is 0 or out of range (written by hand), never none.
+func (s Settings) ResetLead() time.Duration {
+	m := s.CodexResetLead
+	if m < CodexResetLeadLeast || m > CodexResetLeadMost {
+		m = CodexResetLeadDefault
+	}
+	return time.Duration(m) * time.Minute
 }
 
 // ClassifyTimeoutDefault is the seconds a classifier is given when

@@ -29,7 +29,7 @@ three.
 2. `startBackend` brings up the gateway, or finds another magpie serving it.
 3. The panel and the window load `index.html` from `Handler`. `boot.js` passes the saved language, theme, colorblind mode, text size and desktop font choices before the first paint.
 4. The page reads `GET /api/state` and writes through `POST` routes. Each write answers with the new state, built under `held`.
-5. Closing the window hides it. On the Mac a full-screen window first leaves full screen (`closeStep`). The system's close on the panel (a title bar's X, Alt+F4, a window manager's close key) hides it as Escape does, so the tray icon opens it again; a panel lightweight mode let go, no longer `h.panel`, closes (`makePanel`, `TestPanelCloseHidesIt`). Lightweight mode lets go only of a window closed this way: one covered by another app's window, minimised, or open as magpie was hidden is still open (`windowUp`, not Wails' `IsVisible`, which is the occlusion state), and so is it for the Dock while the window is open and for a restart (#1381, `TestCoveredWindowStaysUp`). On the Mac the tray icon and a usage cell close an open panel by the same test (`windowOpen` in `togglePanelNow` and `trayCellClick`, not Wails' `ToggleWindow`), so under a window over the whole screen, such as a remote-desktop server's privacy curtain, the icon still closes the panel instead of showing it again (#1661, `TestTrayCellClickReleasedPanel`).
+5. Closing the window hides it. On the Mac a full-screen window first leaves full screen (`closeStep`). The system's close on the panel (a title bar's X, Alt+F4, a window manager's close key) hides it as Escape does, so the tray icon opens it again; a panel lightweight mode let go, no longer `h.panel`, closes (`makePanel`, `TestPanelCloseHidesIt`). Lightweight mode lets go only of a window closed this way: one covered by another app's window, minimised, or open as magpie was hidden is still open (`windowUp`, not Wails' `IsVisible`, which is the occlusion state), and so is it for the Dock while the window is open and for a restart (#1381, `TestCoveredWindowStaysUp`). On the Mac the tray icon and a usage cell close an open panel by the same test (`windowOpen` in `togglePanelNow` and `trayCellClick`, not Wails' `ToggleWindow`), so under a window over the whole screen, such as a remote-desktop server's privacy curtain, the icon still closes the panel instead of showing it again (#1661, `TestTrayCellClickReleasedPanel`). On Windows a hidden window's WebView2 is put on its low memory target (`lowWhileHidden`, [`memtarget_windows.go`](../../internal/gui/memtarget_windows.go): `ICoreWebView2_19::put_MemoryUsageTargetLevel`, on each hide, on a page that comes while hidden, and back to normal on each show), so the panel and the window kept loaded in the tray stop holding what they last drew; the page stays loaded and running, unlike lightweight mode. In the tray the WebView2 processes' private working set went from ~170 MB to 20 to 40 MB, while their commit charge stayed where it was (molamaker11 on X). WKWebView and WebKitGTK have nothing magpie can set for it.
 6. The window opens as it was last left. Its settled size and whether it was maximised are kept in `settings.Window` and `settings.WindowMaximised` (`settle`; per machine, see `KeepOwn`). A maximised window keeps the size it restores to. `makeMain` opens it at that size (`openSize`). On its first show, `placeMain` maximises it again on the Mac and Windows (on Windows once the page has come). On Linux, `makeMain` makes it maximised with `StartState`. On Windows a size larger than the screen's work area is fitted and centred (`fitRoom`), and the larger size stays kept. Where it was left is kept too, in `settings.WindowAt` (its top left corner across every screen, in the system's coordinates), so after a restart or an update it opens there rather than in the middle (jorbenzhu on Discord). `keepAt` saves it once a move or resize has rested for half a second, unless the window is maximised, full screen, minimised or hidden; `settings.Save` writes through temp and rename, and a settings file that can't be read is left alone. On its first show `placeMain` puts it back (`putBack`): `openAt` takes the screen holding most of the window, moves the window fully onto that screen's work area, and leaves it centred when no screen holds any of it, such as a monitor that is gone, or when the screens or the file can't be read (`TestOpenAt`). Under Wayland a window can't place itself, so nothing is kept or put back there unless GDK_BACKEND is x11 (`keepsPlace`, `TestKeepsPlace`). The tray's panel isn't kept: on the Mac and Windows it opens under the tray icon, and on Linux where the click was.
 7. The page's header is the window's title bar. `plainTitlebar` sets it up once the app has started, and again on a window lightweight mode made again (`madeAgain`). On Linux it hides GTK's title bar and keeps the shadow and the resize edges; GTK 3 leaves the corners square. On the Mac the traffic lights are inset into the header (`MacTitleBarHiddenInset`). In the design of macOS 26 a window with a toolbar has larger corners than one with a plain title bar, so `insetLights` ([`titlebar_darwin.go`](../../internal/gui/titlebar_darwin.go)) takes the toolbar off, and `MagpieLights` keeps the lights and the title bar's height where the toolbar had them: after a resize, a new title, light or dark, more contrast or less transparency, and leaving full screen. A sheet, such as the folder chooser, still begins below the title bar. A first press while another app is in front still moves the window from anywhere in that title bar (`firstPress`), as AppKit moved it with the toolbar; AppKit itself now does so only in a plain title bar's top 32pt. AppKit gives a program that design from macOS 26 when the program is linked against the macOS 26 SDK or a later one and its Info.plist doesn't ask for the earlier design (`UIDesignRequiresCompatibility`); `designOf26` reads each at run time, as the SDK depends on the toolchain that built magpie. The toolbar stays in the earlier design, where it doesn't change the corners, with the lights on the right (a right-to-left language), or when the title bar isn't laid out as expected; this is decided once, when the window is set up. In full screen the title bar is AppKit's own. Windows keeps its own title bar.
 8. On the Mac, Settings › Show in Dock puts magpie in the Dock never (`DockNever`), while the window is open (the default; `DockWindow` records it chosen, for an older magpie that took none for never) or always (`Dock`, which wins). The default was never until ShouguangCao on X found the open window out of Command-Tab, so going back to it to paste a key copied elsewhere took the menu bar; a new install (no settings.json) reads With window, and Hide is a choice of its own (`inDock`, `dockChoice` in app.js, `TestDockFollowsWindowByDefault`, `dock-choice.test.cjs`). A file written before that has no `dockSettled`, and stored Hide as nothing, so a user who chose Hide can't be told from one who never chose: such a file with no Dock choice reads as Hide, and the first save writes it so with `dockSettled` (`settleDock`, `TestOlderSettingsKeepHide`, `TestNewInstallFollowsWindow`). A file nobody can read reads the same way. The page never sends `dockSettled`; the save keeps the file's (`TestSettingsSaveKeepsDockReading`). It is this computer's own, as the Dock choice is (`KeepOwn`). A full-screen window joins it whatever the setting (`inDock`, `dockOnFullscreen`). `openMain` joins before it shows the window (`setDock` runs on the main thread at once). An app activated out of the Dock (the quick panel's focus) that then joins it stays last in Command-Tab's order though it is in front, so joining to the front activates magpie by way of the Dock (`dockStep`, `activateAgain`; #1381, `TestDockStep`, `TestDockJoinLeadsCommandTab`). It does so without asking NSApp whether magpie is active: the Mac makes it the front app at once, and NSApp says so only once the main thread has taken that in, after the join on a busy Mac (#1651).
@@ -222,6 +222,28 @@ session opened from elsewhere, unfolds them. Checkboxes and the Delete bar
 come only with Select, and Done lets the pick go. Relocate project and
 Delete all sessions are in a folder's ⋯ menu, shown on hover (always on a
 touch screen) and on a right-click. See `sessions-folder-list.test.cjs`.
+
+### Routing day tallies
+
+Live, an account's row under Accounts and keys counts its tried, answered
+and failed over the day's whole history, not over the last few requests
+the gateway keeps (#3351): the two said different things by orders of
+magnitude, and the day tabs above the section count the day. The counts
+come with the history read the page already polls (`/api/gateway/history`
+with no day, its `tallies`), counted by `DayTallies` in
+[`internal/gateway/history.go`](../../internal/gateway/history.go) from
+the same files the Usage page reads, keyed as the page groups accounts
+(provider and user, a key or provider by its id). Each look folds in only
+the whole lines added to today's files since the last one: a busy day's
+file is hundreds of MB (#3383), and the page asks every 15 seconds. A
+request done since the last look is counted at the next one. The note
+under the heading says the counts are today's. What the history cannot
+say — the readings the latest request was weighed by, the rests, one
+model resting alone, the accounts in the kept requests — the page still
+takes from the trace over these tallies; a day picked, or a purpose
+picked, counts its own list as before, and the note then points at that
+list. An older answer without tallies counts the kept requests as it
+did. See `routing-day-tallies.test.cjs`.
 
 ### Stored agent sessions in WSL
 
@@ -465,6 +487,14 @@ brings `.rt-gsec` to the top of the view and focuses it; the page's layout is
 unchanged. `fitGo` gives it only the head's spare room: named, its arrow
 alone, or left out, so nothing else in the head moves or wraps for it
 (`routing-groups-jump.test.cjs`).
+Live, the Routing page's card (its head, story and context window) tells of
+one request, `cur`, chosen by `told()` in `plugins/routing/client.js`: it
+stays on the request it tells of until that one is done, then goes to the
+newest, except that a newer request routing hasn't picked for yet does not
+take it from one that was routed. Requests that come meanwhile still fly on
+the stage, without a caption of their own. With several
+conversations sending at once it used to follow the newest and jump between
+them (qiang2040 on Discord, `routing-concurrent-hold.test.cjs`).
 
 The Plugins page updates the npm search-results section when a search answers,
 leaving suggested plugin cards in place so a click begun before the answer still
@@ -608,6 +638,33 @@ Windows has no SCM_RIGHTS for a listening socket in this form, and
 `magpie web` re-executes itself in place; both restart as before, waiting
 for the gateway to be idle (#577). `make dev` keeps its own handover, a
 new backend listening beside the old one (`gateway.Handover`, `devBackend`).
+
+`magpie update` in a terminal restarts the app the same way
+(gaubeebangeel on X: an agent the gateway serves ran the update at 4am,
+and the app ran on as the old version until it was quit and reopened,
+which cut the agent off). Once it has put the new version in
+(`updateCmd` in [`update_cli.go`](../../internal/cli/update_cli.go)),
+`restartRunning` posts the version to `gateway.RestartPath`
+(`/v1/magpie/restart`, [`restart.go`](../../internal/gateway/restart.go)),
+answered only to a program on this computer over loopback, never to a
+page or another Host (`restartRefused`, the heap profile's rule). The
+updater's `restartBeside` ([`update_beside.go`](../../internal/gui/update_beside.go))
+restarts only when it was the copy replaced (`replaced`, which now also
+compares a Mac's `.app` binary, `bundleExe`), takes the version as
+`ready` without asking the feed, and runs Settings' AutoRestart restart
+(`autoRestart`): at once when the restart cuts nothing short, else
+through `waitIdle`. It answers `restarting`, `waiting` (with `Busy`),
+`current` (another copy) or `unsupported` (`magpie serve`, which has no
+restarter and is restarted the way it was started), and the command says
+which. A magpie older than this answers 404, and the command says to
+quit and reopen it, so the first update into this version still needs
+that. On Windows, with no handover, the restart waits for an idle
+gateway as above, so nothing in flight is cut but the port is closed
+while the new version starts (#4521). See `TestUpdateInATerminalRestartsTheAppWithoutCuttingIt` in
+[`update_beside_unix_test.go`](../../internal/gui/update_beside_unix_test.go),
+`TestRestartAskedOnlyFromThisComputer` in
+[`restart_test.go`](../../internal/gateway/restart_test.go) and
+`TestUpdateAsksTheRunningMagpieToRestart`.
 
 See `TestRestartHandsTheGatewayOver` (the new version a second process,
 a stream across the restart finishing whole, requests during it answered,

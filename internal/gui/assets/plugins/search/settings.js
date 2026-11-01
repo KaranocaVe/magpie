@@ -180,6 +180,37 @@ function renderSearch(s, keep) {
   const mcp = row(t("MCP server"), t("Cursor, Claude Desktop and other agents can add this search as an MCP server (Streamable HTTP), with a web_search tool and a web_fetch tool that reads a page by its URL. From another computer, send a gateway key as Authorization: Bearer <key>."),
     el("code", "", mcpURL), copyBtn(mcpURL, t("Address")));
   mcp.id = "searchMcpRow";
+  // The Library gives this search to the agents picked for it, as Magpie
+  // Web Search, and lists it under its MCP servers: an address alone had
+  // the reader look for it there and not find it (lutra_fs on Discord).
+  // As Images' Magpie Image (#2091), the row says how to get there from
+  // where the reader is: gateway mode has no Library, and the Library can
+  // be turned off
+  if (!gatewayMode) {
+    const libOff = featuresOff.has("library");
+    const go = el("button", "link search-mcp-lib", libOff ? t("Turn on the Library") : t("Give agents Magpie Web Search…"));
+    go.type = "button";
+    go.onclick = async () => {
+      if (!libOff) {
+        if (await show("library") !== false) magpie.call("library", "server", "magpie-web-search");
+        return;
+      }
+      go.disabled = true;
+      try {
+        const next = await api("plugins/builtin", { id: "library", on: true });
+        if (state.settings) state.settings.builtins = next;
+        applyFeatures(next);
+        status(t("The Library is on"), "ok", 1500);
+        renderSettings();
+      } catch (err) {
+        go.disabled = false;
+        status(t(err.message), "err");
+      }
+    };
+    const line = el("div", "sub search-mcp-how");
+    line.append(go);
+    mcp.querySelector(".who").append(line);
+  }
 }
 
 // searchArrange: the search APIs are asked in the order they are listed,

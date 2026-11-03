@@ -32,12 +32,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/plugin"
@@ -212,6 +214,21 @@ type state struct {
 	// Blind is the last write, when the server didn't check the version
 	// it went over (version.Blind), until a sync reads it back
 	Blind *blind `json:"blind,omitempty"`
+	// Brought is each agent field's value as the last sync that changed it
+	// here wrote it, Replaced the value picked here that it wrote over,
+	// and Own the fields put back to that value since: this computer's
+	// own, never brought in or taken up (own.go). Follow is Settings
+	// asking for the own ones to follow the others again, on the next
+	// sync. They are this computer's choices, kept when sync moves to
+	// another server.
+	Brought  map[string]string `json:"brought,omitempty"`
+	Replaced map[string]string `json:"replaced,omitempty"`
+	Own      map[string]bool   `json:"own,omitempty"`
+	Follow   bool              `json:"follow,omitempty"`
+	// Here is the agents whose picks stayed on this computer (settings'
+	// AgentsHere) as the last sync left them: an agent turned so since is
+	// a change the next sync settles, its hashes made as before it.
+	Here []string `json:"here,omitempty"`
 }
 
 // blind is a write the server didn't check: the file it wrote (Sum), and
@@ -232,10 +249,19 @@ type blind struct {
 
 func path(name string) string { return filepath.Join(settings.Dir(), name) }
 
-// Load reads the setup; false when sync is off.
+// loadReads counts Load's reads of the file, for a test.
+var loadReads atomic.Int64
+
+// Load reads the setup; false when sync is off. The file's bytes are
+// read once until it changes (filememo), each caller given a Config of
+// its own: every Providers page poll asked it, most often of a file that
+// isn't there.
 func Load() (Config, bool) {
 	var c Config
-	b, err := os.ReadFile(path("sync.json"))
+	b, err := filememo.Read("davsync-setup", path("sync.json"), func(b []byte) ([]byte, error) {
+		loadReads.Add(1)
+		return bytes.Clone(b), nil // its own, not a buffer filememo reads into again
+	})
 	if err != nil || json.Unmarshal(b, &c) != nil || c.URL == "" {
 		return Config{}, false
 	}
@@ -430,7 +456,8 @@ func Off() error {
 			st.Error, st.Notice, st.Undo, st.Usage = "", nil, "", nil
 			saveState(st)
 		}
-		usage.DropAllShared() // the others' usage came by sync: it goes with it (#542)
+		usage.DropAllShared()   // the others' usage came by sync: it goes with it (#542)
+		defer filememo.Forget() // read again, where a request holds it
 		if err := os.Remove(path("sync.json")); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -475,6 +502,9 @@ type View struct {
 	// account here: sync carries no sign-in, so each is to be signed in to
 	// on this computer before it is listed
 	SignIn []string `json:"signIn,omitempty"`
+	// Own is the agent fields picked on this computer after a sync set
+	// them, which sync leaves as they are here (own.go)
+	Own []OwnField `json:"own,omitempty"`
 }
 
 // OtherView is the other kind's server as the Settings page shows it.
@@ -516,6 +546,9 @@ func Status() View {
 		}
 	}
 	v.Usage = c.Usage
+	if c.Agents {
+		v.Own = ownFields(st)
+	}
 	if o := c.Other; o != nil {
 		v.Other = &OtherView{Kind: strings.ToLower(o.config().Kind()), URL: o.URL, User: o.User, PasswordSet: o.Password != "",
 			Endpoint: o.Endpoint, Region: o.Region, PathStyle: o.PathStyle, Branch: o.Branch}
@@ -664,7 +697,7 @@ func syncNow(ctx context.Context, force bool) error {
 	}
 	st := loadState()
 	if st.Key != stateKey(c) { // another folder or passphrase: start afresh
-		st = state{Key: stateKey(c)}
+		st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own, Follow: st.Follow, Here: st.Here}
 	}
 	err = syncOnce(ctx, c, &st)
 	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
@@ -794,7 +827,11 @@ func hashes(b backup.Bundle) map[string]string {
 	if b.GatewayKeys != nil { // a missing store keeps older bundles' hash
 		settingsHash = h([]any{s, *b.GatewayKeys})
 	}
-	providers := []any{b.Providers, b.Icons, b.Groups}
+	ps := slices.Clone(b.Providers)
+	for i := range ps { // this computer's own: kept by Mirror, never synced
+		ps[i].KeepLogin, ps[i].KeepLoginAs, ps[i].SwitchOnly = false, "", false
+	}
+	providers := []any{ps, b.Icons, b.Groups}
 	if b.Searches != nil && len(*b.Searches) > 0 { // as before them, without one
 		providers = append(providers, *b.Searches)
 	}
@@ -807,12 +844,18 @@ func hashes(b backup.Bundle) map[string]string {
 	if b.Plugins != nil && len(*b.Plugins) > 0 { // as before them, without one
 		providers = append(providers, map[string][]plugin.Entry{"plugins": *b.Plugins})
 	}
+	lib := b.Library
+	if lib != nil && lib.Subagents != nil && len(*lib.Subagents) == 0 { // as before them, without one
+		c := *lib
+		c.Subagents = nil
+		lib = &c
+	}
 	return map[string]string{
 		"providers": h(providers),
 		"settings":  settingsHash,
 		"profiles":  h(orEmpty(b.Profiles)),
 		"agents":    h(orEmpty(b.Agents)),
-		"library":   h(b.Library),
+		"library":   h(lib),
 	}
 }
 
@@ -1063,9 +1106,30 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	if err != nil {
 		return err
 	}
-	L := hashes(local)
+	// An agent field picked here after a sync set it is this computer's
+	// own from now on (own.go). prev is the own fields the last sync's
+	// hashes left out, so this one's compare with them alike: a field
+	// owned now is a change here, never a change on both sides. own is
+	// every field kept here this time, and after what the next sync's
+	// hashes leave out: none of them, once Settings gave them back.
+	// An agent whose picks stay here (hereOf) is own in every field, as
+	// the last sync had it in prev, as it is now in keep and afterW.
+	prev := withHere(maps.Clone(st.Own), st.Here)
+	if c.Agents {
+		noticeOwn(st, local.Agents)
+	}
+	own, after := st.Own, st.Own
+	follow := st.Follow && len(own) > 0 && c.Agents
+	if follow {
+		after = nil
+	}
+	st.Follow = false
+	kept := hereOf(c, local)
+	moved := !slices.Equal(kept, st.Here)
+	keep, afterW := withHere(own, kept), withHere(after, kept)
+	L := hashesOwn(local, prev)
 	if unchanged {
-		if maps.Equal(L, st.Local) {
+		if maps.Equal(L, st.Local) && !follow && !moved {
 			return nil // nothing changed on either side
 		}
 		// changed here: merged with the server's file as last seen, or,
@@ -1090,7 +1154,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		if err != nil {
 			return err
 		}
-		st.Sum, st.Server, st.Remote = sum(sealed), v, hashes(b)
+		st.Sum, st.Server, st.Remote = sum(sealed), v, hashesOwn(b, afterW)
 		if v.Blind {
 			were.Sum = st.Sum
 			st.Blind = &were
@@ -1102,10 +1166,11 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		if err := push(local, "", blind{}); err != nil {
 			return err
 		}
-		st.Local = L
+		st.Own, st.Here = after, kept
+		st.Local = hashesOwn(local, afterW)
 		return nil
 	}
-	if sum(data) == st.Sum && maps.Equal(L, st.Local) {
+	if sum(data) == st.Sum && maps.Equal(L, st.Local) && !follow && !moved {
 		st.Server = ver
 		remember(data)
 		return nil // nothing changed on either side
@@ -1167,7 +1232,10 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		data = good
 		rebuilt = true // push the merged result even if it matches the cached copy
 	}
-	R := hashes(remote)
+	// R compares with the last sync as its hashes were; Rafter is the
+	// server's file as this sync leaves it read, both before the merge
+	// below changes remote (a join's unseen gateway keys)
+	R, Rafter := hashesOwn(remote, prev), hashesOwn(remote, afterW)
 	first := st.Local == nil
 	merged := remote
 	var bringIn, here, there []string
@@ -1184,6 +1252,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		switch {
 		case lc && !rc:
 			take(&merged, local, p)
+			if p == "agents" {
+				keepServersOwn(&merged, remote, keep)
+			}
 		case rc && !lc:
 			if first && p == "settings" {
 				keepUnseenGatewayKeys(&remote, local)
@@ -1195,6 +1266,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		case lc && rc: // both: the newer stays
 			if changed(p, c.Keys).After(remote.Created) {
 				take(&merged, local, p)
+				if p == "agents" {
+					keepServersOwn(&merged, remote, keep)
+				}
 				there = append(there, p)
 			} else {
 				bringIn = append(bringIn, p)
@@ -1218,20 +1292,43 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		saved = dir
 	}
 	for _, p := range bringIn {
+		if p == "agents" {
+			got, err := bringAgents(remote.Agents, afterW)
+			broughtIn(st, got)
+			if err != nil {
+				return fmt.Errorf("bringing in the %s: %w", p, err)
+			}
+			continue
+		}
 		if err := bring(remote, p); err != nil {
 			return fmt.Errorf("bringing in the %s: %w", p, err)
 		}
 	}
+	if follow && c.Agents && !slices.Contains(bringIn, "agents") {
+		// the fields given back to sync take the server's values, the
+		// agents' other fields left as they are here
+		fields := map[string]string{}
+		for k := range own {
+			if v, ok := remote.Agents[k]; ok {
+				fields[k] = v
+			}
+		}
+		got, err := bringAgents(fields, nil)
+		broughtIn(st, got)
+		if err != nil {
+			return fmt.Errorf("bringing in the agents: %w", err)
+		}
+	}
+	st.Own, st.Here, R = after, kept, Rafter
 	// the server's file is in; what is pushed next counts as changed here
 	// until the push is done
-	now := L
-	if len(bringIn) > 0 {
+	if len(bringIn) > 0 || follow {
 		if local, err = collect(c); err != nil {
 			return err
 		}
-		now = hashes(local)
 	}
-	M, pending := hashes(merged), map[string]string{}
+	now := hashesOwn(local, afterW)
+	M, pending := hashesOwn(merged, afterW), map[string]string{}
 	for _, p := range Parts {
 		pending[p] = now[p]
 		if M[p] != R[p] && st.Local != nil {

@@ -3,6 +3,10 @@ run-name: Custom build — ${{ github.ref_name }} @ ${{ github.sha }}
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/custom-build.yml'
 
 permissions:
   contents: read

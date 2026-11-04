@@ -93,7 +93,13 @@ type Provider struct {
 	// the Anthropic base is the root (what ANTHROPIC_BASE_URL takes).
 	Chat      string `json:"chat,omitempty"`
 	Responses string `json:"responses,omitempty"`
-	Anthropic string `json:"anthropic,omitempty"`
+	// SealGroup is a user-declared sealing/decryption compatibility identity.
+	SealGroup string `json:"sealGroup,omitempty"`
+	// AllowCrossProviderSealedTasks opts a provider in to sharing sealed Codex subagent tasks.
+	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
+	// RoutesToOfficialCodexBackend declares that the final upstream is OpenAI Codex.
+	RoutesToOfficialCodexBackend bool   `json:"routesToOfficialCodexBackend,omitempty"`
+	Anthropic                    string `json:"anthropic,omitempty"`
 	// Gemini is the base of Google's Gemini API, or of one that answers as
 	// it does (…/v1beta): models/{model}:streamGenerateContent is asked
 	// under it, with the key in x-goog-api-key, and models under it lists
@@ -1620,6 +1626,7 @@ func normalize(p Provider) Provider {
 	if p.BaseAPI != "" && p.baseOf(p.BaseAPI) == "" {
 		p.BaseAPI = ""
 	}
+	p.SealGroup = strings.TrimSpace(p.SealGroup)
 	p.Models = cleanList(p.Models)
 	p.Fallback = cleanList(p.Fallback)
 	// a provider saved under an id a preset carried before (presetAliases:

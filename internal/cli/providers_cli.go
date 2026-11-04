@@ -31,11 +31,14 @@ const providerUsage = `usage:
   magpie provider <id>                    show one provider and its models
   magpie provider add <preset> <key>      add a preset vendor   e.g. magpie provider add deepseek sk-…
                                           again, it adds another (deepseek-2); k=v pairs too: id, name, header.X-Foo
-  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, search, user-agent,
+  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.method, balance.token, models.url, seal-group, sealed-tasks, official-codex-backend, search, user-agent,
                                           access.key, access.secret (a Volcengine access key, or a Tencent Cloud SecretId and SecretKey, for its plan's windows)
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add;
                                           codex=as-sent sends Codex's Responses requests as Codex sent them
                                           (a relay that checks they are Codex's own), codex=default fits them;
+                                          seal-group=NAME lets two compatible Responses providers share sealed tasks;
+                                          sealed-tasks=on enables explicit sharing with other opted-in providers;
+                                          official-codex-backend=on declares that this provider ultimately reaches OpenAI Codex;
                                           user-agent=agent sends the User-Agent the agent gave (pi, opencode…)
                                           in place of magpie's, for a plan that serves only agents it names;
                                           user-agent=magpie, the default, sends magpie's;
@@ -1130,6 +1133,26 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.SecretAccessKey = v
 		case "models.url":
 			p.ModelsURL = v
+		case "seal-group":
+			p.SealGroup = strings.TrimSpace(v)
+		case "sealed-tasks":
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "on", "yes", "true", "cross-provider":
+				p.AllowCrossProviderSealedTasks = true
+			case "off", "no", "false", "default", "":
+				p.AllowCrossProviderSealedTasks = false
+			default:
+				return fmt.Errorf("sealed-tasks=on|off, not %q", v)
+			}
+		case "official-codex-backend":
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "on", "yes", "true":
+				p.RoutesToOfficialCodexBackend = true
+			case "off", "no", "false", "default", "":
+				p.RoutesToOfficialCodexBackend = false
+			default:
+				return fmt.Errorf("official-codex-backend=on|off, not %q", v)
+			}
 		case "codex":
 			// as-sent: Codex's requests go to it as Codex sent them, for
 			// a relay that checks they are Codex's own (#1758)

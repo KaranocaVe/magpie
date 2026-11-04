@@ -85,6 +85,36 @@ func TestSealedTaskGoesBackToTheRelayThatSealedIt(t *testing.T) {
 	}
 }
 
+func TestSealedTaskWithCustomToolStaysOnNativeResponses(t *testing.T) {
+	fresh(t)
+	relay := relayOn(t, "s2a")
+	s := New()
+	if rec := codexSubTurn(s, "s2a/gpt-6-astra", "lead-1", "", leadAsk); rec.Code != 200 {
+		t.Fatalf("lead: %d %s", rec.Code, rec.Body.String())
+	}
+
+	tools := `"tools":[
+		{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}]},
+		{"type":"custom","name":"apply_patch"},
+		{"type":"web_search"}]`
+	body := `{"model":"s2a/gpt-6-astra","stream":true,` + tools + `,"input":[` + sealedHandoff + `]}`
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	req.Header.Set("session_id", "worker-1")
+	req.Header.Set("x-codex-parent-thread-id", "lead-1")
+	req.Header.Set("x-openai-subagent", "collab_spawn")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("subagent: %d %s", rec.Code, rec.Body.String())
+	}
+	got := relay.requests()
+	if len(got) != 2 || !strings.Contains(got[1], `"type":"agent_message"`) || !strings.Contains(got[1], `"encrypted_content":"gAAAAATest_ciphertext=="`) {
+		t.Fatalf("the subagent's sealed task was translated: %v", got)
+	}
+}
+
 // A subagent on another provider than the one that sealed its task is
 // still turned away before anyone is asked, and told which one sealed it,
 // not to use a Magpie-served model it already uses.

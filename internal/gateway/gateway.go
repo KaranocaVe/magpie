@@ -4908,6 +4908,11 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// back whole (gathers)
 	relayable := slices.Contains(s.usable(p, model), from) && (p.Account == nil || !p.Account.Stream || streamOf(body) || gathers(p, from, body))
 	relay := relayable
+	// A sealed NEW_TASK must reach the backend that can open it unchanged.
+	// On a provider declared to terminate at OpenAI Codex, keep the marked
+	// spawn_agent arguments native too; translation labels them plaintext.
+	preserveSealed := from == provider.Responses && (hasSealedAgentMessage(body) ||
+		p.RoutesToOfficialCodexBackend && asksSealing(body))
 	// a Claude model is asked on Messages whatever API the client spoke,
 	// for the cache breakpoints the translation adds: OpenCode speaks Chat
 	// for every model, and a relay drops cache_control on Chat, so every
@@ -4928,7 +4933,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// apply_patch as a function, left web_search out and added
 	// max_output_tokens, the shape such a relay turns away (maralica on
 	// Discord). Its web_search goes to the relay as sent.
-	if relay && searchedForIt(r.Context(), p, from, model, body) && !(from == provider.Responses && (hasSealedAgentMessage(body) || codexAsSent(p, r.Header))) {
+	if relay && searchedForIt(r.Context(), p, from, model, body) && !(preserveSealed || from == provider.Responses && codexAsSent(p, r.Header)) {
 		relay, ownAPI = false, true
 	}
 	// Copilot seals an argument the tools mark "encrypted" (spawn_agent's
@@ -4978,7 +4983,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// (custom_tool.go, #2656): translated on the client's own API, which
 	// offers them as functions
 	customOff := func() bool {
-		if from != provider.Responses || !hasCustomTool(body) {
+		if from != provider.Responses || preserveSealed || !hasCustomTool(body) {
 			return false
 		}
 		// Grok's, on Copilot's /responses in front of it: xAI takes no
@@ -4998,6 +5003,13 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	if keep && relayable {
 		relay, ownAPI = true, false
 	}
+	if preserveSealed {
+		if !relayable {
+			msg := p.Name + " cannot relay a sealed Codex handoff on the Responses API"
+			return writeError(w, from, 400, msg), msg
+		}
+		relay, ownAPI = true, false
+	}
 	if relay {
 		call.To = from
 		// a web search magpie ran for the model, replayed to a provider
@@ -5011,6 +5023,9 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 		status, msg, done := s.passthrough(w, r, p, from, model, body, &call.Usage)
 		if done {
 			return status, msg
+		}
+		if preserveSealed {
+			return writeError(w, from, status, msg), msg
 		}
 		// the model isn't served on the client's own API: speak another;
 		// or it turned the custom tools away just now: speak it translated,

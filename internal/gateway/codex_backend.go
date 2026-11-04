@@ -383,7 +383,41 @@ func (s *Server) sealedReader(p provider.Provider, model string, sealers []strin
 	if p.Account != nil && p.Account.Agent == "codex" {
 		return true
 	}
-	return p.Account == nil && slices.Contains(sealers, p.ID) && slices.Contains(s.usable(p, model), provider.Responses)
+	if p.Account != nil || !slices.Contains(s.usable(p, model), provider.Responses) {
+		return false
+	}
+	for _, id := range sealers {
+		if id == "" {
+			continue
+		}
+		if id == p.ID {
+			return true
+		}
+		source, err := provider.Find(id)
+		if err != nil || source == nil || source.Account != nil ||
+			!slices.Contains(source.Speaks(), provider.Responses) {
+			continue
+		}
+		if sameSealingBackend(p, *source) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameSealingBackend reports whether two Responses provider entries are explicitly
+// declared compatible with the same sealed Codex subagent payloads. Matching
+// SealGroup values are a precise declaration; providers both marked as routing
+// to the official OpenAI Codex backend share that final decryption backend;
+// alternatively, both can opt in generically. URLs and API keys alone are not proof.
+func sameSealingBackend(a, b provider.Provider) bool {
+	if group := strings.TrimSpace(a.SealGroup); group != "" && group == strings.TrimSpace(b.SealGroup) {
+		return true
+	}
+	if a.RoutesToOfficialCodexBackend && b.RoutesToOfficialCodexBackend {
+		return true
+	}
+	return a.AllowCrossProviderSealedTasks && b.AllowCrossProviderSealedTasks
 }
 
 // sealedReaders keeps of cands those that can read a sealed subagent task,

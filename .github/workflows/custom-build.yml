@@ -144,7 +144,9 @@ jobs:
           make release-cli TARGETS="${GOOS}/${GOARCH}" VERSION="custom-${GITHUB_SHA:0:7}"
           cd dist
           sha256sum * > SHA256SUMS
-          test -s "magpie-cli-${GOOS}-${GOARCH}$([[ "$GOOS" == windows ]] && echo .exe)"
+          suffix=""
+          if [[ "$GOOS" == windows ]]; then suffix=".exe"; fi
+          test -s "magpie-cli-${GOOS}-${GOARCH}${suffix}"
       - uses: actions/upload-artifact@v4
         with:
           name: magpie-custom-cli-${{ matrix.goos }}-${{ matrix.goarch }}

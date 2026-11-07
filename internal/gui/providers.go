@@ -367,8 +367,9 @@ type providerJSON struct {
 	// plugin that can run it (provider.Move): set for those that have one
 	Move *moveJSON `json:"move,omitempty"`
 	// User-declared sealed task compatibility for Responses providers.
-	AllowCrossProviderSealedTasks bool `json:"allowCrossProviderSealedTasks,omitempty"`
-	RoutesToOfficialCodexBackend  bool `json:"routesToOfficialCodexBackend,omitempty"`
+	SealGroup                     string `json:"sealGroup,omitempty"`
+	AllowCrossProviderSealedTasks bool   `json:"allowCrossProviderSealedTasks,omitempty"`
+	RoutesToOfficialCodexBackend  bool   `json:"routesToOfficialCodexBackend,omitempty"`
 	// a subscription account's rests in force, by its user in lower case:
 	// its own and each of its models' (maxleebeta on Discord: WorkBuddy's
 	// 429 "将在 … 重置" rested a model, credits left, and nothing here said so)
@@ -740,7 +741,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	avail := ls.Available
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, RoutesToOfficialCodexBackend: p.RoutesToOfficialCodexBackend, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
+		Chat: p.Chat, Responses: p.Responses, SealGroup: p.SealGroup, AllowCrossProviderSealedTasks: p.AllowCrossProviderSealedTasks, RoutesToOfficialCodexBackend: p.RoutesToOfficialCodexBackend, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, LimitRestOff: p.LimitRestOff, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
@@ -1588,9 +1589,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NativeCompaction, for save: Codex's compaction asked of it
 			// as Codex sent it (provider.Provider.NativeCompaction); a save
 			// that leaves it out keeps it
-			NativeCompaction              *bool `json:"nativeCompaction"`
-			AllowCrossProviderSealedTasks *bool `json:"allowCrossProviderSealedTasks"`
-			RoutesToOfficialCodexBackend  *bool `json:"routesToOfficialCodexBackend"`
+			NativeCompaction              *bool   `json:"nativeCompaction"`
+			SealGroup                     *string `json:"sealGroup"`
+			AllowCrossProviderSealedTasks *bool   `json:"allowCrossProviderSealedTasks"`
+			RoutesToOfficialCodexBackend  *bool   `json:"routesToOfficialCodexBackend"`
 			// AuthHeader, for save: which header the key goes in on a
 			// third-party Anthropic API (provider.Provider.AuthHeader); a
 			// save that leaves it out keeps it, one learned too
@@ -1670,6 +1672,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		if req.NativeCompaction != nil {
 			in.NativeCompaction = *req.NativeCompaction
+		}
+		if req.SealGroup != nil {
+			in.SealGroup = *req.SealGroup
 		}
 		if req.AllowCrossProviderSealedTasks != nil {
 			in.AllowCrossProviderSealedTasks = *req.AllowCrossProviderSealedTasks
@@ -1767,6 +1772,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Unredacted = in.Unredacted
 				pr.CountFree = in.CountFree
 				pr.NativeCompaction = in.NativeCompaction
+				pr.SealGroup = in.SealGroup
 				pr.AllowCrossProviderSealedTasks = in.AllowCrossProviderSealedTasks
 				pr.RoutesToOfficialCodexBackend = in.RoutesToOfficialCodexBackend
 				pr.PassUserAgent = in.PassUserAgent
@@ -2110,6 +2116,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					}
 					if req.NativeCompaction == nil {
 						in.NativeCompaction = old.NativeCompaction
+					}
+					if req.SealGroup == nil {
+						in.SealGroup = old.SealGroup
 					}
 					if req.AllowCrossProviderSealedTasks == nil {
 						in.AllowCrossProviderSealedTasks = old.AllowCrossProviderSealedTasks

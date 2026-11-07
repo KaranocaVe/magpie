@@ -13,6 +13,22 @@ Plugin ownership of the deprecated built-in subscriptions is in
 [Provider and plugin ownership](provider-plugins.md). How the gateway orders
 keys and accounts per request is in [Gateway routing and fallback](gateway-routing.md).
 
+## Fork's sealed-task compatibility declarations
+
+`Provider.SealGroup`, `AllowCrossProviderSealedTasks` and
+`RoutesToOfficialCodexBackend` are explicit declarations, persisted in
+`providers.json` and set through the CLI's `seal-group`, `sealed-tasks` and
+`official-codex-backend` settings. The provider editor offers the two boolean
+declarations for Responses providers. An omitted declaration in a provider
+save keeps its saved value; an explicit empty `sealGroup` clears the group.
+The editor does not expose a seal-group field, so saving another setting
+must preserve a group assigned through the CLI.
+
+The gateway's compatibility and native-relay rules are described in
+[Gateway routing and fallback](gateway-routing.md#forks-sealed-codex-handoffs).
+The save contract is exercised by `TestProviderSaveSealGroupPresence` in
+[`provider_save_seal_group_test.go`](../../internal/gui/provider_save_seal_group_test.go).
+
 ## Responsibilities and sources of truth
 
 | Part | Responsibility | Source |

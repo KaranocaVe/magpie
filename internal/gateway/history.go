@@ -363,6 +363,7 @@ func appendRoute(routes []Route, line []byte) []Route {
 	}
 	r.routedAgain()
 	r.Prompt.skillsApart()
+	r.Canceled = usage.CanceledBy(r.Status, r.Error) // kept before Canceled was
 	return append(routes, r)
 }
 
@@ -678,6 +679,9 @@ func foldTally(tallies map[string]*Tally, line []byte) {
 			if f == "" {
 				f = "other"
 			}
+			if f == failQuota && tr.Rest != nil && tr.Rest.Rate {
+				f = failRate // counted as the vendor called it
+			}
 			if a.Fails == nil {
 				a.Fails = map[string]int{}
 			}
@@ -711,6 +715,7 @@ func HistoryRoute(id int64, day time.Time) (Route, bool) {
 				}
 				found.routedAgain()
 				found.Prompt.skillsApart()
+				found.Canceled = usage.CanceledBy(found.Status, found.Error)
 				return false
 			})
 			if found.ID != 0 {

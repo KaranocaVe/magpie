@@ -204,6 +204,10 @@ type dshResponse struct {
 	Model         string `json:"model"`
 	Provider      string `json:"provider"`
 	ResponseModel string `json:"responseModel"`
+	// ResponseID is the id of the reply object the vendor's own response
+	// carried, as dsh read it: the same id magpie's gateway wrote on the
+	// route that served it (Route.ResponseID)
+	ResponseID string `json:"responseId"`
 }
 
 // dshReplay is a reply's replay state, where dsh keeps what the vendor's own
@@ -364,8 +368,12 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 	case "session/end-seed":
 		if h.Version >= 2 && h.IsSeeded && e.Data.Inherited {
 			// the events a fork was seeded with end here: what was
-			// counted of them is its source's
-			n := &state{ID: s.ID, Cwd: s.Cwd, Title: s.Title, First: s.First, Named: s.Named, Size: s.Size, Mod: s.Mod}
+			// counted of them is its source's. What they opened is
+			// kept: dsh writes no parentSession for a fork, so the
+			// openings its seed carried are all that says the fork
+			// came from them (SeedConvs)
+			n := &state{ID: s.ID, Cwd: s.Cwd, Title: s.Title, First: s.First, Named: s.Named, Size: s.Size, Mod: s.Mod,
+				SeedConvs: append(append([]string(nil), s.SeedConvs...), s.Convs...)}
 			n.saw(ms(h.CreatedAt), main)
 			*s = *n
 			return
@@ -373,6 +381,13 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 	}
 	if h.Version < 2 && e.Seq != nil && *e.Seq < h.SeedLength {
 		return
+	}
+	if e.Type == "assistant/message" && main {
+		if src := e.Data.Message.Source; dshGatewayProvider(src) {
+			if id := src.ReplayState.Response.ResponseID; id != "" {
+				s.ResponseIDs = append(s.ResponseIDs, id)
+			}
+		}
 	}
 	at := ms(e.Time)
 	s.saw(at, main)

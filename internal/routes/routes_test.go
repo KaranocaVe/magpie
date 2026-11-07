@@ -174,6 +174,32 @@ func TestPace(t *testing.T) {
 	}
 }
 
+// A seat at 90% of its week alone (WeekLow) keeps its place in Smart and
+// Use before expiry: renewing sooner, or with more per hour to lose, it
+// goes ahead of one with room (ysicing_01858 on Discord). Least used first
+// still puts it by its share; at 98% it is all but used up in every one.
+func TestWeekLowKeepsItsPlace(t *testing.T) {
+	now := time.Now()
+	s := []Seat{
+		{Key: "room", Known: true, Used: 30, Soon: []time.Time{now.Add(48 * time.Hour)}, Pace: 70.0 / 48},
+		{Key: "week", Known: true, Used: 91, WeekLow: true, Soon: []time.Time{now.Add(3 * time.Hour)}, Pace: 3},
+	}
+	for name, st := range map[string]Strategy{"smart": Smart, "pace": Pace} {
+		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"week", "room"}) {
+			t.Errorf("%s: %v, want [week room]", name, got)
+		}
+	}
+	if got := keys(s, Apply(LeastUsed, "p", s)); !slices.Equal(got, []string{"room", "week"}) {
+		t.Errorf("least used: %v, want [room week]", got)
+	}
+	s[1].Used = 98
+	for name, st := range map[string]Strategy{"smart": Smart, "pace": Pace} {
+		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"room", "week"}) {
+			t.Errorf("%s at 98%%: %v, want [room week]", name, got)
+		}
+	}
+}
+
 // By weight: over six requests a seat weighing 2 goes first twice as often
 // as each weighing 1, and the others follow the one picked in their order.
 func TestWeighted(t *testing.T) {
@@ -209,5 +235,32 @@ func TestCreditsFirstOfTheSpent(t *testing.T) {
 		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"fine", "low", "credits", "spent"}) {
 			t.Errorf("%s: %v", name, got)
 		}
+	}
+}
+
+// A seat whose provider is set to be used first (Seat.Lead) goes ahead of
+// the others Smart weighs it with: an API key's monthly credit before a
+// subscription with room, which renews soonest (hzh_1119 on Discord). One
+// all but used up goes with the others that are, and with none set to
+// lead, Smart goes as it did.
+func TestSmartLeadFirst(t *testing.T) {
+	now := time.Now()
+	s := []Seat{
+		{Key: "plus", Used: 10, Soon: []time.Time{now.Add(2 * time.Hour)}},
+		{Key: "pro", Used: 40, Soon: []time.Time{now.Add(24 * time.Hour)}},
+		{Key: "api", Lead: true},
+		{Key: "api-spent", Lead: true, Used: 99},
+		{Key: "spent", Used: 98},
+	}
+	got := keys(s, Apply(Smart, "p", s))
+	if want := []string{"api", "plus", "pro", "spent", "api-spent"}; !slices.Equal(got, want) {
+		t.Fatalf("Smart with a lead: %v, want %v", got, want)
+	}
+	for i := range s {
+		s[i].Lead = false
+	}
+	got = keys(s, Apply(Smart, "p", s))
+	if want := []string{"plus", "pro", "api", "spent", "api-spent"}; !slices.Equal(got, want) {
+		t.Fatalf("Smart with none set: %v, want %v", got, want)
 	}
 }

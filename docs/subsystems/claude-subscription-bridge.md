@@ -219,8 +219,11 @@ connection and TLS left as they were, and tees the body of each reply to
 a request with `x-claude-code-request-class: main`, a `/v1/messages` path
 and a `text/event-stream` reply. Claude Code reads one branch as before.
 The tap parses the other and writes one JSON line per event to the file:
-`{s, open}` when a stream starts, `{s, e}` for each event other than
-`ping`, and `{s, end: "done"|"cut"}` when it ends. At load it writes
+`{s, open}` when a stream starts, with `h`, the reply's
+`anthropic-ratelimit-unified-*` headers, when it has any, `{s, e}` for
+each event other than `ping`, and `{s, end: "done"|"cut"}` when it ends.
+The tap only reads the reply's headers; the request is sent as Claude
+Code made it. At load it writes
 `{tap: "on"}`, or `{tap: "none"}` when there is no `FetchSession` to
 replace.
 
@@ -234,6 +237,19 @@ while a stream is open, and tells each event as `-p` does: a
   and when its stream comes late it is left out (`dropped`).
 - Before a turn's result, `tap.settle` waits up to 1s for the open
   streams to end, and ends the rest there.
+
+The headers become the `rate_limit_event` `-p` tells from them
+(`rateLimitInfo`, as Claude Code 2.1.291 builds it): `status` and
+`unifiedWindows` with each of `five_hour`, `seven_day` and
+`seven_day_overage_included` (`5h`, `7d`, `7d_oi`) whose utilization and
+reset are both said, the reset rounded to a second. A streamed message
+tells it before its `message_start`, so the bridge keeps it
+(`NoteClaudeLimits`) before the reply begins. A reply whose message was
+told whole, or that never started one, tells it at the turn's end
+(`tap.settle`), and only when it is the latest: a later reply's told
+with its stream is never followed by an older one's. A `<synthetic>` API error's own
+`rate_limit_info` is told after that, as the newest. Before this, a
+successful turn in the interactive mode told no allowance (T-076).
 
 A stream cut short gets a `message_stop` with no `message_delta`, as `-p`
 ends such a stream, and the bridge counts it as an attempt and asks
@@ -256,10 +272,26 @@ reader (`run.onCall`). Not shown from the transcript within `callFirst`
 it), the call is a reply of its own: a message with that one `tool_use`
 (Claude Code makes its MCP calls one at a time, a message's parallel
 calls too). The first message written after such a call is the one that
-made it. Its rows are left out (`lateID`), and its usage is told with the
+made it. Its rows are left out (`lateID`), and its usage is billed with the
 next reply. A call in that message that wasn't made yet becomes its own
 reply when it is made (`written`). A reply told this way has no words or
 thinking: the model's text before its call is lost to the client.
+
+A reply that more than one message makes (a late message, Claude Code's
+own ToolSearch or WebSearch, a cut stream's retry) tells its client the
+last message's input, cache writes and cache reads, and every message's
+output (`Usage.after`). Claude Code reads the last reply's three as how
+full the conversation is, and each message re-sent what the one before
+it had: summed, a reply after a ToolSearch read 1,154,857 cached tokens
+for a 577k conversation and Claude Code compacted early (sleepy_shibe on
+Discord). The earlier messages' prompts go in `Usage.Deferred`, billed in
+the ledger and never told. The translated route's tries (the empty reply
+asked again, a loop's re-ask, a cut reply's continuation) and web search
+rounds tell theirs the same way (#5115). A later message's prompt counts
+replace the earlier's, a zero too (`Usage.restart`), so a field the later
+one reads nothing in is not left at the earlier's (`TestClaudeOwnCallReplyTellsLastPrompt`,
+`TestClaudeTUILateMessagePromptNotTold`, `TestRetriedReplyTellsLastPrompt`,
+`TestLaterTryZeroCacheReadNotTold`).
 
 The user's own `~/.claude.json` and `~/.claude` are never written by
 magpie (Claude Code writes them, as when it records its onboarding done,
@@ -271,12 +303,36 @@ both magpie's. In the caller's folder under the account Claude Code is
 signed in to, the question is the user's: the helper ends there, saying
 so (`claudetui.Untrusted`), and the turn goes in magpie's own folder,
 told the caller's as any run whose folder isn't here is (`envElsewhere`;
-`startTrusted`). That folder is passed over for 10 minutes
-(`passedOver`, `untrustedFor`), then tried again, the user having maybe
-trusted it since. Until 11-01 such a run became `-p`; from then until
-this change it was a 502, which a Claude Code client (paseo) asked again
+`startTrusted`). Until 11-01 such a run became `-p`; from then until
+the fallback it was a 502, which a Claude Code client (paseo) asked again
 with backoff, so the chat hung (lwjef on X).
-`TestClaudeTUIUntrustedFolderAnswered` holds it. The question opens on "No, exit", and a key
+`TestClaudeTUIUntrustedFolderAnswered` holds it.
+
+Before each such run the bridge decides as Claude Code does whether it
+would ask (`untrustedHere`, `claudeTrusts` in `claude_trusted.go`), from
+the user's own answers in the profile `provider.ClaudeTrustedProjects`
+reads (`CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`), so a folder
+the user never trusted is never run in and a folder they trust is run in
+from the next run on. The rules are Claude Code 2.1.316's, read from its
+code (`claudeTrustedBy`): a `projects` key, the path in NFC (forward
+slashes on Windows), with `hasTrustDialogAccepted` true for the
+repository's main checkout (its root; for a worktree the checkout it was
+added from, `claudeMainCheckout`), or for any folder from the run's up
+to the repository's root and never past it, so a repository inside a
+trusted one is asked about; outside a repository every folder above
+counts. The run's folder as written and with links followed both count.
+A profile that can't be read is unknown, and the run goes in the
+caller's folder as before. A folder Claude Code asked about all the same
+is passed over for 10 minutes (`passedOver`, `untrustedFor`). The run
+that goes in magpie's folder after the question goes on from the
+conversation's saved session (`startRun` keeps it for `startTrusted`).
+Before, only the 10 minutes decided: past them, a conversation whose
+session was in magpie's folder ran in the caller's again, was told the
+whole conversation there, was asked, and was told it all once more in
+magpie's folder with its branch dropped, every 10 minutes (sleepy_shibe
+on Discord). `TestClaudeTUIUntrustedFolderKeepsItsSession`,
+`TestClaudeTUIFolderTrustedLaterRunInAtOnce` and
+`TestClaudeTrustedFolders` hold it. The question opens on "No, exit", and a key
 sent as it is first drawn can be lost to its being drawn again, so the
 helper presses ↓ until "Yes" is the last choice drawn and Enter only once
 it has stayed so for 300ms (`ready`, `trustSettle`). Pressing Enter blind
@@ -302,6 +358,25 @@ when (`claudeTUI`, `claudeMachineWhy`) this computer has no Claude Code
 path or isn't macOS, Linux or Windows. Nothing a request asks is refused
 any more (`claudePrint` keeps an image known by its URL, which
 `serveClaudeSubscription` has downloaded before any run, below).
+
+The one exception to "nothing runs as `-p`" with it On is a turn Anthropic
+refuses in the interactive mode as a third-party app's: a 400 "Third-party
+apps now draw from your extra usage" (#4503). Anthropic judges the agent's
+own system prompt, as a whole, there and serves the same prompt to `-p`
+(isjiajia01's controlled tests; Raven on Discord: Pi in Cindy through
+`group/auto`, every turn refused). When the refusal comes with nothing of
+the reply said or sent (`relay` hands it back as `redoAsPrint`,
+`redoable`), the turn is asked again once as `-p` (`serveSubscriptionAs`,
+`Request.tuiRefused`, `claudePrint` code `third-party`). Anthropic answered
+the refused turn nothing, so the `-p` run is its only answer; a turn that
+would draw from extra usage would have been served, not refused. The
+prompt's fingerprint (`thirdPartyKey`: its first 2KB, the agent's own part
+before Pi's working directory) is kept on the bridge for 12 hours
+(`thirdPartyFor`), and its next turns start as `-p`, their runs going on
+with tool results as a `-p` run does (`wantTUI`). A `-p` run's refusal, a
+turn whose reply had begun, and Off are never asked again
+(`thirdPartyRefused` says why). Settings' own value is not changed.
+`claude_tui_refusal_test.go` holds each case.
 
 A JSON schema is answered through an answer tool of magpie's
 (`claude_tui_schema.go`): interactive Claude Code takes `--json-schema`
@@ -392,8 +467,25 @@ A refused request never ran, so it isn't the editor's last request
 (`noteClaudeRun`). The model test's and warm-up's "hi" (`askClaude`) goes
 through the helper too (`askClaudeTUI`), in stream-json, and its stdin is
 closed at the first result. Reading the plan's allowance (`/usage`,
-`claudeUsageTUI`) types `/usage` in the interactive mode too: the helper
-is told `{"type":"command","command":"/usage"}`, types it, waits for the
+`claudeUsage`) never starts the interactive mode, on or off: it runs
+`claude -p /usage` (`claudeUsageArgs`, #5582). The interactive Claude
+Code 2.1.316 sends a model request as it starts, before anything is
+typed (`probeQuotaStatus`: haiku, `max_tokens` 1, content "quota"),
+unless `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, which also
+keeps `/usage` from loading ("Failed to load usage data"). That request
+counts, so on an idle account it started the five-hour window: from
+v0.1.2635 to the fix, magpie's reads at its start and as a window ended
+opened the user's window with warm-up off (recorded behind a proxy that
+answers everything itself). `-p` sends that request only when
+interactive, so its `/usage` asks the usage endpoint alone
+(`/api/oauth/usage`), and for a subscription's sign-in (the
+`user:profile` scope) prints the plan's windows as the lines
+`provider.parseClaudeUsage` reads. Only a sign-in without that scope (a
+setup-token, which magpie never reads, or an API key) gets the session's
+cost instead. `TestClaudeUsageStartsNoInteractiveRun` holds it.
+
+The helper still takes a typed `/usage`, and nothing of magpie's sends it
+now: it is told `{"type":"command","command":"/usage"}`, types it, waits for the
 panel's windows ("NN% used", `commandSettle` still) and closes it with
 Esc. A panel with no window (its words saying why) is taken as drawn only
 once its Settings tabs show and nothing is loading (`usageDrawn`), still
@@ -404,8 +496,7 @@ With no panel by `commandWait`, the result is an error saying what was
 last drawn (`TestShimWaitsPastTheBanner`, `TestUsageDrawn`). Its result (`local_command: "usage"`) says each window as -p's lines
 do, "Current session: 99% used · resets 7pm (Asia/Shanghai)" (`usageText`,
 tested on the bytes Claude Code 2.1.316 drew, `testdata/usage-2.1.316.bin`),
-for `provider.parseClaudeUsage`. Claude Code 2.1.316's `-p /usage`
-printed only the session's cost there, no window, in a real run.
+for `provider.parseClaudeUsage`.
 The helper reads the screen as a terminal shows it (`grid`,
 [`screen.go`](../../internal/claudetui/screen.go), 200 by 50, the size
 the pseudo-terminal and Windows' pseudo console are made, from one
@@ -427,9 +518,23 @@ The provider keeps the account's last reading on that error
 (`claudeUsageUnknown`, as for Claude Code's own "temporarily
 unavailable"), and a panel with no figure otherwise is "Claude Code's
 /usage showed no usage figures: …", never "told no allowance", which is
-kept for an account Claude Code refuses (`claudeUsageDenied`).
+kept for an account Claude Code refuses (`claudeUsageDenied`, matched by
+`claudeDenied`, which drops "(not your usage limit)" and the request
+counts first). That error names the panel's own text from its tabs on,
+or its "Error: …" line (`usageWhy`, `usagePart`), never the banner and
+folder drawn above it. A panel drawn whole, with its Session tab and no
+error, loading or stale mark, that has no "Current session" or "Current
+week" is an account with no window started yet: Anthropic leaves a
+window out until the request that starts it. Its result is
+`NoUsageWindow`, and the card shows the five-hour window unused, with no
+error (`TestShimReadsUsageWithNoWindow`, `TestClaudeUsageNoWindowStarted`;
+koohoko5924 on Discord, a Claude Enterprise account, on panels built from
+2.1.316's strings, not captured). The Usage endpoint's own errors
+("temporarily limiting requests to the usage page", "rate limited
+until …") are failures as "Failed to load usage data" is
+(`TestShimToldWhyUsageFailed`).
 
-These one-off interactive runs (`askClaudeTUI`, `claudeUsageTUI`) work in
+These one-off interactive runs (`askClaudeTUI`) work in
 magpie's shared work folder (`oneOffDir`: `claudeWorkDir`, a fresh temp
 folder only when it can't be made), where the helper may answer the trust
 question, so a config directory holds one trusted entry for it instead of
@@ -462,7 +567,7 @@ waiting for it" (`oneOffErr`), and the card says the reason
 tooltip. A question about trust left unanswered at the deadline is named
 with its folder ("Claude Code asked whether to trust <folder>, not answered
 in the 16.8s …"), where it said "showed no prompt" before (#4830). A failed
-run also goes to app.log (`logOneOff`: "claude: a /usage read of saved
+run also goes to app.log (`logOneOff`: "claude: a test on haiku of saved
 account <dir> failed: …"), with the helper's whole reason, which the card
 clips to 300 bytes, on one line: the home folder and any
 `/Users/<name>` or `C:\Users\<name>` become `~`, secrets go through
@@ -541,6 +646,20 @@ as the helper waited, and every try was answered 502 "Claude Code has
 not answered magpie's initialize request in 10s" (#4504). A helper that
 answers nothing even then is ended (`tuiNoStart`), and the turn fails
 saying the interactive mode didn't start; the next turn tries it again.
+So does a helper that ends saying why Claude Code didn't come up ("claude-tui:
+…"), unless Claude Code ended itself first (`claudetui.EndedEarly`, as one
+that can't load its session does): a new Claude Code told the whole
+conversation waits on the same thing, and the turn was answered 502 after
+twice 45s (sowhynot). `TestClaudeTUINoPromptNotTriedAgain` holds both.
+A Claude Code that drew nothing in that time (0 bytes read) is said with
+what it runs meanwhile, from `ps` (`undrawn`, macOS and Linux): its
+Keychain read of its sign-in, `security find-generic-password`, has no
+time limit in Claude Code, and one held by a Keychain window or a locked
+keychain is named with what to do; any other command is named by its
+program alone, never its arguments. The helper doesn't end early on 0
+bytes: a Keychain window may still be answered, and Claude Code bounds its
+own network waits (about 30s) before it draws.
+`TestShimSaysWhatAnUndrawnClaudeWaitsOn` holds it.
 
 ## Why turns go on in one run
 
@@ -702,18 +821,42 @@ history to the 1h cache at 2×.
    sent `initialize` first, which Claude Code answers only once it has
    loaded the session; one that can't load it exits 1 ("No conversation
    found with session ID") without answering. `start` then lets the
-   session go and goes on to step 3 in the same request, logged "Claude
+   session go and goes on to step 4 in the same request, logged "Claude
    Code could not go on from the conversation's saved session". Before,
    the turn got 502 "Claude Code ended" with the safety context set, and
    an empty reply without it.
-3. `retire`, then a new run. In the interactive mode, a conversation
+3. `subscriptionBridge.retryBranch` when neither found the run: a turn
+   sent again while its run is still busy answering it (#5405,
+   margbug01) — the client's connection dropped mid-reply, the request
+   was retried, and no cancel reached magpie. A new Claude Code told the
+   whole conversation wrote it all to the cache again, only its own
+   system prompt and tools read from it: on a long conversation a short
+   network blip cost a full cache rewrite, on top of the attempt already
+   paid for and thrown away. The retry's run now resumes a copy of the
+   busy run's session, cut before the turn (`cutReply`, at `backLine`,
+   the line before the turn it was told), and is typed only the turn's
+   messages, so the history is read from the cache. The busy run is not
+   disturbed; `nil` when no busy run of the account is answering this
+   very turn (the request it heard is this one, message for message), the run was started for the turn (no
+   `backLine`), the session can't be copied, the client places its own
+   cache marks, or the run was taken back or is being taken back — the
+   turn told whole, as before.
+4. `retire`, then a new run. In the interactive mode, a conversation
    with a reply that calls no tool is given to the new Claude Code as
    its own transcript (`replaySession`, in `claude_replay.go`): a session
    file of two lines, a user line holding the conversation before that
    reply as below (its images as image blocks, client cache marks taken
    out) and an assistant line holding the reply's words (thinking left
-   out). The run starts with `--resume` on it and is typed only the turns
-   after the reply, as a saved session's run is (the session is
+   out). The user line tells every message before the reply inside
+   `<conversation_history>`, with no `<current_turn>`
+   (`renderClaudePromptAt` with the split at the end): the reply answers
+   the last of them, and the turn to answer is the one typed after it.
+   Before 11-04 the user line was rendered as a first message, so the
+   turn the reply answers was marked `<current_turn>`, "the turn to answer
+   now", and a resumed run answered an old question again or said its
+   tool calls had no results (愛睏柴犬阿茶 on Discord,
+   `TestClaudeTUIReplayMarksNoEarlierTurnCurrent`). The run starts with
+   `--resume` on it and is typed only the turns after the reply, as a saved session's run is (the session is
    discarded if the run doesn't take it). The file goes in the project
    folder of the work folder with its links followed, which is the one
    Claude Code reads (on a Mac `/var` is `/private/var`). Before 11-01
@@ -842,15 +985,32 @@ before the run is let go and its file removed (`branchAt`, a cut copy as
 in [Tool results another request answers first](#tool-results-another-request-answers-first)),
 and a new interactive run resumes the copy, told only the turn's
 messages. Before, every turn after a suggestion was told whole to a new
-run (bbfatx on X). There is no cut with a client's own cache marks, or for a run with no session or no line;
-then the turn is told whole, as before.
-`TestClaudeInteractiveSideQuestionBranchesBeforeIt` holds it.
+run (bbfatx on X). The interactive mode streams a reply first and tells
+its session lines after, read from the file, so as a suggestion begins
+`lastLine` may be a line before the reply (its tool call) or, in a run's
+first reply, empty. The run also keeps the reply's message id (`lastMsg`
+from `replyBegun`, then `backMsg`, `behindMsg` and the shelf's
+`behindMsg`), and `cutReply` cuts after that reply's last main-thread
+line: by the id alone when no line was heard, waiting up to `cutWait` for
+the reply's lines before it falls back to the line (sleepy_shibe, twice).
+The shelf (`unshelve`, `cutBehind`) takes a session behind a side
+question by either. There is no cut with a client's own cache marks, or
+for a run with no session, or neither a line nor a reply; then the turn
+is told whole, as before.
+`TestClaudeInteractiveSideQuestionBranchesBeforeIt`,
+`TestClaudeInteractiveSideQuestionAfterACallKeepsTheReply`,
+`TestClaudeInteractiveSideQuestionAfterAFirstReplyOfWordsKeepsTheReply`,
+`TestClaudeShelvedSideQuestionAfterAFirstReplyOfWordsKeepsTheReply` and
+`TestClaudeCutReplyWaitsForTheReplysLines` hold it.
 
 A turn after a reply that starts a new run logs why none waited
 (`whyNoRun`, "claude: no run waits for this turn: …"): its run went on
 with a turn this one doesn't follow, waits under another key (the model,
 settings, system prompt or tools differ), waits at an earlier turn, is
-busy with another request, ended (how long ago, and why: `endWhy`, set by
+busy with another request (a turn whose run is busy answering the very
+turn sent again goes on from a copy of its session instead,
+`retryBranch`, so this line is not logged for one), ended (how long ago,
+and why: `endWhy`, set by
 `abortFor`, kept in `b.lost` by conversation), or no run here has had the
 conversation. Tool results that find no run waiting add what became of
 the run that made the calls ("the run that made the calls ended …",
@@ -1146,12 +1306,27 @@ client's own prompt named another folder. Under a real Claude Code client,
 
 A run therefore starts in the folder the caller names. `clientWorkDir`
 reads the system prompt and every message that is not the model's, and
-takes the last folder named. It knows four ways of naming it:
+takes the folder the first of them names (in that text, its last line).
+It knows four ways of naming it:
 
 - Claude Code: "Primary working directory: X";
 - Codex: `<cwd>X</cwd>`;
 - OpenCode: "Working directory: X";
 - pi: "Current working directory: X".
+
+The first text counts, not the last, so a conversation keeps one folder.
+Claude Code says a move (`cd`) as a later "# Environment update" message,
+"Primary working directory: /y (was /x)". Taking that one gave a run
+started again for the conversation (its saved session resumed, a branch,
+a replay) another prompt than its first run: `envTurnsNote` names the
+folder, and a run in the caller's own folder has that folder in Claude
+Code's environment and saves its session in that folder's project, so
+`--resume` found nothing. Either way the prefix after Claude Code's own
+part changed and the whole conversation was written to the cache again
+(EricWvi on X: …/frontend, then …/frontend/src, the cache read flipping
+between under 10% and over 90%). The move still reaches the model in the
+conversation, as the caller said it. Not measured: whether a model told
+the first folder in `envTurnsNote` after a move misreads the update.
 
 The folder is taken only when it is an absolute path to a folder on this
 computer. Otherwise, as for a caller elsewhere, a Windows path on a Mac,
@@ -1263,7 +1438,18 @@ Each cost about a fifth of a Pro plan's five hours. The run that made the
 calls instead keeps where in its session each call of the client's tools
 was written: the uuid on Claude Code's `assistant` line (`noteLines`). As
 it parks on them, it also keeps the conversation those calls answered
-(`historyKey`, set in `park`). A request no run takes, whose last reply's
+(`historyKey`, set in `park`), by the ids of the calls the client was
+shown (`shown`): the interactive mode tells a reply's session lines after
+its stream, read from the file, so the run parks before it has them, and
+`noteLines` keeps that conversation when the line comes. Before 11-05 only
+lines already heard were given it, and a late one took the next park's
+conversation, so an interactive run's branch missed in the usual order:
+a fork's directive, or (as kay20475 on X saw it, by its shape) Claude
+Code's AgentSummary for a sub-agent, carrying the results the sub-agent's
+own next turn had taken, was told the whole conversation in a new Claude
+Code each time, pasted as one text, and read only the tools and system
+prompt from the cache (6% of 169k, twice 35s apart). A
+request no run takes, whose last reply's
 calls a live run of the same owner made, from the same conversation, goes
 on in a branch of that run's session. The branch's run copies the
 session's lines up to the reply's uuid into a session file of its own
@@ -1441,7 +1627,8 @@ doesn't by default; that path is unchanged.
 ## The account's allowance on the reply (#1257)
 
 Claude Code tells a run's account allowance in its stream-json
-`rate_limit_event`, not as HTTP headers. The bridge keeps it
+`rate_limit_event`, not as HTTP headers; in the interactive mode the
+helper tells the same event from the tap (see above). The bridge keeps it
 (`provider.NoteClaudeLimits`) and says it again on the reply as the
 `anthropic-ratelimit-unified-{5h,7d,7d_oi}-{utilization,reset}` headers
 Anthropic sends (`limitHeaders`, from `provider.KeptClaudeLimits`): a share

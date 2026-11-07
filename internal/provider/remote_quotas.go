@@ -69,6 +69,14 @@ const errRemoteNoShare = "remote magpie doesn't share its quotas; update magpie 
 // every other machine and, given one, answers the quotas too.
 const errRemoteNotShared = "remote magpie isn't shared; turn on Share on local network on that computer"
 
+// errRemoteHeld is the remote's own card while it holds this provider's
+// key to a budget, models or accounts (errKeyHeld): its accounts' cards
+// aren't told to the key, and the card says so and where that is turned
+// on, rather than leaving the remote's Claude or Codex out with no word
+// (yi_time on Discord: a Claude shared from another computer showed no
+// usage on any page here, its key held to Claude's models there).
+const errRemoteHeld = "remote magpie tells this key none of its quotas, as it holds the key to a budget, models or accounts; on that computer, turn on Quotas for the key under Gateway keys, and let it use every model of a provider whose usage it is to see"
+
 // errRemoteKey is a remote magpie that didn't take this provider's key (401).
 const errRemoteKey = "remote magpie didn't take this key; use one of its enabled gateway keys"
 
@@ -88,7 +96,7 @@ const KeyHeldCode = "gateway_key_held"
 // errKeyHeld is a remote magpie that holds this provider's key to a
 // budget, models or accounts: it tells the key's own card (remoteKeyCards)
 // and none of its accounts', so none is shown, not even one kept from
-// before the key was held.
+// before the key was held; the remote's own card says why (errRemoteHeld).
 var errKeyHeld = errors.New("remote magpie holds this key to a budget, models or accounts")
 
 // errRemoteUnreachable starts the error of a remote magpie that couldn't
@@ -146,9 +154,16 @@ func CachedCards(now time.Time) []SubscriptionQuota {
 }
 
 // ReadAllCards has every card read again, the page's Refresh asked by
-// another magpie whose card of this one's said nothing was read yet.
+// another magpie whose card of this one's said nothing was read yet, or
+// by an app holding a gateway key (POST RemoteRefreshPath with no card
+// named). It is the user's refresh of every allowance, as the Usage
+// page's Refresh is (AskEveryClaudeUsage): each saved Claude account's
+// /usage is run too, under the same 30-second floor and holds (#5443,
+// prgrmrwy: it asked AskUsage alone, and a saved account kept its old
+// reading). The accounts are read side by side, each bounded by
+// subscriptionTimeout, so many of them answer within the gateway's wait.
 func ReadAllCards(ctx context.Context) {
-	AskUsage()
+	AskEveryClaudeUsage()
 	ForgetBalances()
 	forgetPlanQuotas()
 	Quotas(Asked(ctx))
@@ -199,7 +214,7 @@ func ForgetKeptCardsForTest() {
 func remoteMagpies() []Provider {
 	var out []Provider
 	for _, p := range All() {
-		if p.IsRemoteMagpie() && !p.Hidden && !p.Off && p.Key != "" && p.Anthropic != "" {
+		if p.IsRemoteMagpie() && !p.Hidden && !p.Off && !p.SelfLeftOut() && p.Key != "" && p.Anthropic != "" {
 			out = append(out, p)
 		}
 	}
@@ -236,16 +251,17 @@ func remoteCards(ctx context.Context, p Provider, fresh bool) []SubscriptionQuot
 	c.Unlock()
 	if !ok || fresh || time.Since(r.at) >= remoteCardsFor {
 		asked := time.Now()
-		cards, err := askRemote(ctx, p, http.MethodGet, RemoteCardsPath)
+		cards, err := askRemote(ctx, p, http.MethodGet, RemoteCardsPath, remoteWait)
 		r = keepRemoteCards(id, asked, cards, err)
 	}
 	name := remoteName(p)
-	if r.held {
-		return nil
-	}
-	if len(r.cards) == 0 {
+	if len(r.cards) == 0 || r.held {
+		// the latest read's failure first: one since the key was held
+		// says the remote can't be read now
 		msg := r.err
-		if msg == "" {
+		if msg == "" && r.held {
+			msg = errRemoteHeld
+		} else if msg == "" {
 			msg = errRemoteNothingRead
 		}
 		return []SubscriptionQuota{{Provider: p.ID, Name: name, Icon: "magpie", Kind: "subscription", From: name, Windows: []QuotaWindow{}, Error: msg}}
@@ -320,7 +336,7 @@ func refreshRemote(ctx context.Context, p Provider, card, user string) {
 		path += "?" + q.Encode()
 	}
 	asked := time.Now()
-	if _, err := askRemote(ctx, p, http.MethodPost, path); err != nil {
+	if _, err := askRemote(ctx, p, http.MethodPost, path, remoteRefreshWait); err != nil {
 		keepRemoteCards(remoteCardsID(p), asked, nil, err)
 	}
 	remoteCards(ctx, p, true)
@@ -367,7 +383,7 @@ func RemoteQuotaHistories(ctx context.Context, days string) []QuotaHistory {
 		go func() {
 			defer wg.Done()
 			var hs []QuotaHistory
-			if err := remoteJSON(ctx, p, http.MethodGet, "/v1/magpie/quotas/history?days="+url.QueryEscape(days), &hs); err != nil {
+			if err := remoteJSON(ctx, p, http.MethodGet, "/v1/magpie/quotas/history?days="+url.QueryEscape(days), remoteWait, &hs); err != nil {
 				return
 			}
 			for j := range hs {
@@ -380,9 +396,21 @@ func RemoteQuotaHistories(ctx context.Context, days string) []QuotaHistory {
 	return slices.Concat(got...)
 }
 
-func askRemote(ctx context.Context, p Provider, method, path string) ([]SubscriptionQuota, error) {
+// remoteWait is how long a remote magpie is waited for to answer what it
+// keeps; remoteRefreshWait, to read a card or every card again first,
+// which asks the vendors there: one saved Claude account's /usage alone
+// takes about 5 seconds, and a refresh of the remote's every card runs
+// each saved account's (#5443), within its gateway's 30 seconds. At 8
+// seconds the refresh was given up on while it still read, and the cards
+// asked for after it were the ones from before.
+var (
+	remoteWait        = 8 * time.Second
+	remoteRefreshWait = 25 * time.Second
+)
+
+func askRemote(ctx context.Context, p Provider, method, path string, wait time.Duration) ([]SubscriptionQuota, error) {
 	var cards []SubscriptionQuota
-	if err := remoteJSON(ctx, p, method, path, &cards); err != nil {
+	if err := remoteJSON(ctx, p, method, path, wait, &cards); err != nil {
 		return nil, err
 	}
 	return cards, nil
@@ -418,8 +446,8 @@ func remoteKey(h http.Header, key string) {
 }
 
 // remoteJSON asks p's gateway, with its key, for a {"data": …} list.
-func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) error {
-	b, err := remoteBody(ctx, p, method, path, 8*time.Second)
+func remoteJSON(ctx context.Context, p Provider, method, path string, wait time.Duration, dst any) error {
+	b, err := remoteBody(ctx, p, method, path, wait)
 	if err != nil {
 		return err
 	}

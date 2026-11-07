@@ -45,7 +45,7 @@ var Keys = []string{
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin",
 	// models: replies, vision, images, search
-	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries",
+	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries", "retryAfterCap",
 	"vision", "visionEffort", "imageGen", "imageTimeout", "classifyTimeout",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
 	// updates
@@ -179,6 +179,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["refusalRetries"]; !sent {
 		in.RefusalRetries = cur.RefusalRetries
 	}
+	// nor the longest wait an agent is told (#5371)
+	if _, sent := fields["retryAfterCap"]; !sent {
+		in.RetryAfterCap = cur.RetryAfterCap
+	}
 	// nor whether updates download by themselves (#2296)
 	if _, sent := fields["noAutoDownload"]; !sent {
 		in.NoAutoDownload = cur.NoAutoDownload
@@ -267,6 +271,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.AllowIPs = cur.AllowIPs                         // set on its own (allowips)
 	in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
 	in.RouterNote = cur.RouterNote                     // set on its own (the Library's servers/hub-note)
+	in.RouterAllTools = cur.RouterAllTools             // set on its own (the Library's servers/hub-tools)
 	in.GitHubToken = cur.GitHubToken                   // set on its own (github-token), never sent to the page
 	in.ProxyCustom = cur.ProxyCustom                   // set by settings.Save from the proxy, never by the page
 	in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
@@ -287,9 +292,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.RequestArchiveLocal, in.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 	// used or left is the Usage page's toggle as much as Settings', set on its own
 	in.QuotaLeft = cur.QuotaLeft
-	in.QuotaReads = cur.QuotaReads // set on its own (quota-reads)
-	in.SearchAll = cur.SearchAll   // set on its own (search-all)
-	in.UsageOrder = cur.UsageOrder // the Usage page's, dragged there
+	in.QuotaReads = cur.QuotaReads   // set on its own (quota-reads)
+	in.SearchAll = cur.SearchAll     // set on its own (search-all)
+	in.SearchCount = cur.SearchCount // and so is this (search-count)
+	in.UsageOrder = cur.UsageOrder   // the Usage page's, dragged there
 	// and what the tray panel's Allowances tab leaves out, set there
 	in.PanelUsageHidden = cur.PanelUsageHidden
 	// and the clients the Usage page's Agents list leaves out, set there
@@ -307,8 +313,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids)
 	in.BusyLoad = cur.BusyLoad         // and so is this (busy-load)
 	in.CodexAgentsV1 = cur.CodexAgentsV1
-	in.FullContext = cur.FullContext // set on its own (full-context)
-	in.CompactAt = cur.CompactAt     // and so is the threshold
+	in.FullContext = cur.FullContext     // set on its own (full-context)
+	in.CompactAt = cur.CompactAt         // and so is the threshold
+	in.AgentCompacts = cur.AgentCompacts // and each agent's own (agent-compact)
 	// Codex's background compaction, set on its own (codex-async-compact)
 	in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 	// Claude Desktop's list, set in its row on the Agents page

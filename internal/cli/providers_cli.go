@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/stats"
@@ -56,10 +58,16 @@ const providerUsage = `usage:
                                           keeps the cache); OpenAI's API and a ChatGPT (Codex) account do so by
                                           default; additional-tools=off puts it with the other tools,
                                           additional-tools=default is magpie's
+                                          image-files=off sends DeepSeek's API an agent's images inline on every
+                                          turn; image-files=on, the default, uploads each once (for a day)
+                                          and names it by its file id
                                           patience=2m keeps a request to it alone (not through a group) that long
                                           while it is busy or briefly rate limited, asking again after a pause
                                           (at most 4m); patience=off hands the agent the error at once;
                                           patience=default, 1m
+                                          errors=pass sends the agent its errors as the vendor sent them:
+                                          asked once, nothing read into them, no other provider tried;
+                                          errors=magpie, the default, has magpie handle them
   magpie provider key <id> <key>          change the API key
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
@@ -861,6 +869,9 @@ func showProvider(p provider.Provider) error {
 	if p.Searches {
 		kv("search", "by itself"+muted.Render("  a client's web search goes to it as sent"))
 	}
+	if p.PassesErrors() {
+		kv("errors", "pass"+muted.Render("  sent to the agent as the vendor sent them, asked once"))
+	}
 	if p.PassUserAgent {
 		why := "  the User-Agent the agent gave, not magpie's"
 		if !p.PassesUserAgent() {
@@ -1164,6 +1175,17 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			default:
 				return fmt.Errorf("codex=as-sent|default, not %q", v)
 			}
+		case "image-files":
+			// off: DeepSeek's own API is sent an agent's images inline on
+			// every turn, not uploaded once and named by file id (#5407)
+			switch strings.ToLower(v) {
+			case "off", "no", "inline":
+				p.ImageFilesOff = true
+			case "on", "yes", "default":
+				p.ImageFilesOff = false
+			default:
+				return fmt.Errorf("image-files=on|off, not %q", v)
+			}
 		case "prompt":
 			// as-written: Antigravity's subscription is sent the system
 			// prompt exactly as the agent wrote it, the lines Google turns
@@ -1201,6 +1223,23 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return err
 			}
 			p.Patience = n
+		case "errors":
+			// pass: its errors go to the agent as the vendor sent them,
+			// asked once, nothing inferred, no other provider tried and
+			// none rested for (ne9ko9 on Discord); magpie: handled by
+			// magpie, the default
+			var on bool
+			switch strings.ToLower(v) {
+			case "pass", "pass-through", "passthrough", "on", "yes":
+				on = true
+			case "magpie", "default", "off", "no":
+			default:
+				return fmt.Errorf("errors=pass|magpie, not %q", v)
+			}
+			if on && !p.TakesPassErrors() {
+				return fmt.Errorf("%s isn't a provider with an API key; errors= is for one", p.Name)
+			}
+			p.PassErrors = on
 		case "user-agent", "ua":
 			// agent: a request goes with the User-Agent the agent that
 			// sent it gave, for a coding plan that serves only agents it
@@ -1274,9 +1313,10 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err != nil {
 				return err
 			}
-			if r == provider.Manual || r == provider.Cheapest {
+			if r == provider.Manual || r == provider.Cheapest || r == provider.FreeExpiring {
 				// cheap: its keys and accounts all bill the provider's one
-				// price, so there is nothing to weigh
+				// price, so there is nothing to weigh; expiring weighs
+				// several subscriptions' free quota, a group's members
 				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
 			}
 			p.Routing = r
@@ -1480,7 +1520,24 @@ func serve() error {
 			fmt.Println(amber.Render("!"), x.Agent+":", x.Why)
 		}
 	}
-	return s.ListenAndServe(context.Background())
+	// an update put in where this runs from is restarted into
+	// (serve_follow.go)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	follow := newServeFollow(s, stop)
+	if follow != nil {
+		gateway.SetRestarter(follow.answer)
+		go follow.run(ctx)
+	}
+	err := s.ListenAndServe(ctx)
+	if exe := follow.restartTo(); exe != "" {
+		// the plugin hosts end, waited for, first, as magpie web's
+		// reexec does (#3285)
+		plugin.EndHosts()
+		log.Printf("magpie serve: restarting into %s", exe)
+		return serveReexec(exe, os.Args[1:], os.Environ())
+	}
+	return err
 }
 
 // importCmd adds the provider a magpie://import link describes, after

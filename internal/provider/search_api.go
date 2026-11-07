@@ -32,6 +32,12 @@ type SearchAPI struct {
 	// on again (#2286): to try one API alone, or rest one whose credit is
 	// nearly spent, without taking its key away.
 	Off bool `json:"off,omitempty"`
+	// Mix asks it together with the other search APIs marked so, at once,
+	// and gives the model their pages merged, a page two of them found
+	// once (#2845): no one API was best on every kind of question, and
+	// their pages together found more than any alone. With fewer than two
+	// such APIs that can be asked, a search goes in order as before.
+	Mix bool `json:"mix,omitempty"`
 }
 
 // How a search picks among a search API's keys (SearchAPI.Pick).
@@ -58,6 +64,10 @@ type SearchVendor struct {
 	Plugin, PluginID string
 	// NeedURL: a plugin's API the user gives an address for, as a SearXNG
 	NeedURL bool
+	// Auth: a plugin's API that signs in as the same plugin's provider of
+	// this id (plugin.SearchDef.Auth), taking no key: each search is one
+	// of that provider's accounts that are on (SearchSignIn)
+	Auth string
 }
 
 // WantsURL is whether the user must give its address (a SearXNG's, or a
@@ -95,7 +105,7 @@ func AllSearchVendors() []SearchVendor {
 	ps, _ := plugin.NotedSearches()
 	for _, p := range ps {
 		out = append(out, SearchVendor{ID: p.VendorID(), Name: p.Name, KeysURL: p.KeysURL, KeyOptional: p.KeyOptional,
-			Plugin: p.Spec, PluginID: p.ID, NeedURL: p.NeedURL})
+			Plugin: p.Spec, PluginID: p.ID, NeedURL: p.NeedURL, Auth: p.Auth})
 	}
 	return out
 }
@@ -181,10 +191,12 @@ func (a SearchAPI) ownBase() string {
 }
 
 // Ready is whether it can be asked: a vendor magpie knows, at an address,
-// with a key where it needs one (a SearXNG, You.com, may not).
+// with a key where it needs one (a SearXNG, You.com, may not; one that
+// signs in never does: signed out, a search says so and the next API is
+// asked).
 func (a SearchAPI) Ready() bool {
 	v, known := SearchVendorOf(a.Vendor)
-	return known && (a.Base() != "" || (v.Plugin != "" && !v.NeedURL)) && (a.Key != "" || v.KeyOptional)
+	return known && (a.Base() != "" || (v.Plugin != "" && !v.NeedURL)) && (a.Key != "" || v.KeyOptional || v.Auth != "")
 }
 
 // check says what is wrong with a search API the user gives.
@@ -217,7 +229,7 @@ func (a SearchAPI) check() error {
 	if v.Plugin != "" && v.NeedURL && a.URL == "" {
 		return fmt.Errorf("%s needs its address, as url=https://…", a.Name())
 	}
-	if a.Key == "" && !v.KeyOptional {
+	if a.Key == "" && !v.KeyOptional && v.Auth == "" {
 		return fmt.Errorf("%s needs its API key", a.Name())
 	}
 	return nil
@@ -251,7 +263,7 @@ func StoredSearchAPIs() []SearchAPI { return load().Searches }
 // SetSearchAPI adds a search API, last, or changes the one of its vendor
 // where it is; a change with no key keeps the key it has, and one with no
 // Pick the pick it has ("turns" puts the default back). One switched off
-// stays off.
+// stays off, and one marked mix stays mixed.
 func SetSearchAPI(a SearchAPI) error {
 	a.Vendor = strings.ToLower(strings.TrimSpace(a.Vendor))
 	a.Key, a.URL = strings.Join(a.Keys(), ","), strings.TrimSpace(a.URL)
@@ -265,7 +277,7 @@ func SetSearchAPI(a SearchAPI) error {
 		a.Key = f.Searches[i].Key
 	}
 	if i >= 0 {
-		a.Off = f.Searches[i].Off
+		a.Off, a.Mix = f.Searches[i].Off, f.Searches[i].Mix
 	}
 	switch {
 	case pick == "turns":
@@ -319,6 +331,31 @@ func SwitchSearchAPI(vendor string, on bool) error {
 		return nil
 	}
 	f.Searches[i].Off = !on
+	return store(f)
+}
+
+// MixSearchAPIs marks the vendors' search APIs to be asked together
+// (SearchAPI.Mix, #2845), and every other one not: two or more, each set
+// up and named once. None puts every one back to being asked in order.
+func MixSearchAPIs(vendors []string) error {
+	if len(vendors) == 1 {
+		return fmt.Errorf("name two or more search APIs to ask together")
+	}
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	for i, v := range vendors {
+		if !slices.ContainsFunc(f.Searches, func(x SearchAPI) bool { return x.Vendor == v }) {
+			return fmt.Errorf("no %s search API is set up", v)
+		}
+		if slices.Contains(vendors[:i], v) {
+			return fmt.Errorf("%s is named twice", v)
+		}
+	}
+	for i := range f.Searches {
+		f.Searches[i].Mix = slices.Contains(vendors, f.Searches[i].Vendor)
+	}
 	return store(f)
 }
 

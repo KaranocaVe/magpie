@@ -132,16 +132,35 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const inner = fold(page).locator(":scope > .inner");
       const arrow = () => fold(page).locator(":scope > summary").evaluate((s) => getComputedStyle(s, "::before").transform);
       const y = await page.evaluate(() => scrollY);
+      await page.evaluate(() => {
+        const animate = Element.prototype.animate;
+        Element.prototype.animate = function (...args) {
+          const animation = animate.apply(this, args);
+          if (this.matches(".editor details.advanced > .inner")) window.advancedFoldGrow = animation;
+          return animation;
+        };
+      });
       await fold(page).locator(":scope > summary").click();
       assert.equal(await isOpen(page), true, "open from the click on");
       const boxMoves = () => page.evaluate(() => document.querySelector(".modal .dialog").getAnimations().length > 0);
       // a window tall enough that the dialog isn't already as tall as it goes
       assert(await boxMoves(), "the dialog grows with it");
       assert(await inner.evaluate((x) => [...x.children].some((r) => r.getAnimations().length)), "its rows come in");
+      await page.waitForFunction(() => !!window.advancedFoldGrow);
+      const grow = await page.evaluateHandle(() => window.advancedFoldGrow);
+      await grow.evaluate((animation) => {
+        animation.pause();
+        animation.currentTime = animation.effect.getTiming().duration * 0.1;
+      });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
       const mid = await inner.evaluate((x) => x.getBoundingClientRect().height);
-      await page.waitForFunction(() => !document.querySelector(".editor details.advanced > .inner").getAnimations().length);
+      await grow.evaluate((animation) => {
+        animation.currentTime = animation.effect.getTiming().duration;
+        animation.finish();
+      });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
       const full = await inner.evaluate((x) => x.getBoundingClientRect().height);
-      assert(mid < full, `it grows (${mid} then ${full})`);
+      assert(0 < mid && mid < full, `it grows (${mid} then ${full})`);
       await page.waitForFunction(() => !document.getAnimations().length);
       assert.equal(await arrow(), "matrix(0, 1, -1, 0, 0, 0)", "the arrow turned");
       assert.equal(await page.evaluate(() => scrollY), y, "the click moves no page");

@@ -11,6 +11,33 @@ This page covers how a request is routed. Plugins that change requests and
 replies are in [Gateway middleware](gateway-middleware.md). Subscriptions
 served by a plugin are in [Provider and plugin ownership](provider-plugins.md).
 
+## Fork's sealed Codex handoffs
+
+In this fork, `sameSealingBackend` allows a sealed task between Responses
+providers when they share a nonempty `SealGroup`, both declare
+`RoutesToOfficialCodexBackend`, or both opt into
+`AllowCrossProviderSealedTasks`. Matching endpoint URLs or credentials alone
+does not establish compatibility. These settings declare backend compatibility;
+they do not verify that a backend can decrypt the task.
+
+`Server.attempt` keeps sealed task messages on native Responses. It also
+preserves an encrypted spawn schema when the provider declares the official
+Codex backend. If the selected provider cannot relay Responses, it returns
+400. If that native relay fails, the attempt returns the failure without
+retrying through translation, which would change the encrypted protocol.
+The official-backend declaration also preserves encrypted spawn arguments
+and Codex access-program fields on the relay path.
+
+[`sealed_agent_compatibility_test.go`](../../internal/gateway/sealed_agent_compatibility_test.go)
+exercises the compatibility choices, and
+[`sealed_agent_relay_test.go`](../../internal/gateway/sealed_agent_relay_test.go)
+and [`native_relay_collab_test.go`](../../internal/gateway/native_relay_collab_test.go)
+exercise native handoffs and encrypted spawn calls.
+[`sealed_relay_failure_test.go`](../../internal/gateway/sealed_relay_failure_test.go)
+checks that a native refusal reaches the caller without a translated retry.
+The fork's
+`Sealed task compatibility` workflow runs on main, fix and restore pushes.
+
 WorkBuddy and CodeBuddy Code's `X-Conversation-ID` is a native session header
 in `sessionHeaders` (`sessionOf`, `nativeSessionOf`, `conversationID` in
 [`gateway.go`](../../internal/gateway/gateway.go)). It keeps their requests

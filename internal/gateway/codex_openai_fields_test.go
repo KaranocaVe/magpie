@@ -83,6 +83,7 @@ func TestCodexOpenAIFieldsStayWithOpenAI(t *testing.T) {
 	for _, p := range []provider.Provider{
 		{Responses: "https://api.openai.com/v1"},
 		{Account: &provider.Account{Agent: "codex"}},
+		{Responses: "https://api.poxiao.vip/v1", RoutesToOfficialCodexBackend: true},
 	} {
 		if got := forVendor(p, []byte(sent), false); string(got) != sent {
 			t.Errorf("%+v: %s", p, got)

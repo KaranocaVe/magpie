@@ -166,7 +166,45 @@ func TestNativeRelayLeavesOtherCallsBe(t *testing.T) {
 	}
 }
 
-// OpenAI's own API, Azure's and a ChatGPT account answer the seal
+// A provider explicitly routed through the official Codex backend has the
+// same sealing behavior as OpenAI, even though its configured host is a relay.
+func TestOfficialCodexRelayPreservesSealedSpawnCall(t *testing.T) {
+	fresh(t)
+	call := `{"type":"function_call","id":"fc_1","call_id":"c9","name":"spawn_agent","namespace":"collaboration","arguments":"","encrypted_function_args":["message"],"status":"completed"}`
+	f := &fake{t: t, reply: sse(
+		`data: {"type":"response.created","response":{"id":"r1","status":"in_progress","output":[]}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":`+call+`}`,
+		`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[`+call+`]}}`)}
+	setup(t, provider.Responses, f)
+	p, err := provider.Find("fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.RoutesToOfficialCodexBackend = true
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+
+	tools := `"tools":[
+		{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}}}}]},
+		{"type":"custom","name":"apply_patch"},
+		{"type":"web_search"}]`
+	body := `{"model":"fake/m1","stream":true,` + tools + `,"input":[{"type":"message","role":"user","content":"spawn"}]}`
+	rec := httptest.NewRecorder()
+	New().Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(string(f.got), `"encrypted":true`) || !strings.Contains(string(f.got), `"type":"namespace"`) {
+		t.Fatalf("the sealing schema was translated: %s", f.got)
+	}
+	if !strings.Contains(rec.Body.String(), `"encrypted_function_args":["message"]`) || strings.Contains(rec.Body.String(), `"encrypted_function_args":[]`) {
+		t.Fatalf("Codex did not receive the upstream seal unchanged: %s", rec.Body)
+	}
+}
+
+// OpenAI, Azure, a ChatGPT account, or a declared official Codex relay
+// answers the seal itself; an ordinary relay does not.
 // themselves: their replies are not given the empty list a relay's are,
 // and a third-party relay's are (#3183).
 func TestSealsItsOwnIsOpenAIOnly(t *testing.T) {
@@ -178,6 +216,7 @@ func TestSealsItsOwnIsOpenAIOnly(t *testing.T) {
 		{"OpenAI's API", provider.Provider{ID: "openai", Responses: "https://api.openai.com/v1"}, true},
 		{"Azure", provider.Provider{ID: "az", Responses: "https://x.openai.azure.com/openai/v1"}, true},
 		{"a ChatGPT account", provider.Provider{ID: "codex", Account: &provider.Account{Agent: "codex"}}, true},
+		{"a relay to the official Codex backend", provider.Provider{ID: "poxiao", Responses: "https://api.poxiao.vip/v1", RoutesToOfficialCodexBackend: true}, true},
 		{"a relay", provider.Provider{ID: "ucloud", Responses: "https://api.modelverse.cn/v1"}, false},
 		{"a Grok account", provider.Provider{ID: "grok", Account: &provider.Account{Agent: "grok"}, Responses: "https://api.x.ai/v1"}, false},
 	} {

@@ -75,3 +75,33 @@ func TestProviderSaveSealGroupPresence(t *testing.T) {
 	post(`{"id":"relay","from":"relay","name":"Relay","responses":"` + endpoint + `","headers":{},"sealGroup":""}`)
 	check("")
 }
+
+func TestProviderSaveSealedAndUpstreamSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	mux := http.NewServeMux()
+	providerRoutes(mux, nil)
+	post := func(body string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/provider/save", strings.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	}
+	const base = `"id":"relay","from":"relay","name":"Relay","responses":"http://127.0.0.1:1/v1","headers":{}`
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Responses: "http://127.0.0.1:1/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	post(`{` + base + `,"sealGroup":"shared","allowCrossProviderSealedTasks":true,"routesToOfficialCodexBackend":true,"listOff":true,"passUserAgent":false}`)
+	post(`{` + base + `}`)
+	p, err := provider.Find("relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SealGroup != "shared" || !p.AllowCrossProviderSealedTasks || !p.RoutesToOfficialCodexBackend || !p.ListOff || !p.MagpieUserAgent {
+		t.Fatalf("settings were not retained: sealGroup=%q crossProvider=%v official=%v listOff=%v magpieUserAgent=%v", p.SealGroup, p.AllowCrossProviderSealedTasks, p.RoutesToOfficialCodexBackend, p.ListOff, p.MagpieUserAgent)
+	}
+}

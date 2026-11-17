@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,10 +48,16 @@ var (
 	// followLook is how often the providers followed are looked at again
 	// with no write of magpie's to say they changed
 	followLook = time.Minute
+	// followQuick: a 304 sooner than this that doesn't say it waited
+	// (ListWaitHeader) is from a magpie that didn't wait
+	followQuick = 5 * time.Second
 )
 
 // errListNotWaited is a magpie that answered the list at once, with no
-// ETag: one from before ListWaitHeader.
+// ETag: one from before ListWaitHeader. Or one whose 304 came at once and
+// doesn't say it waited: a magpie that tags every list, reached through a
+// proxy that dropped ListWaitHeader, which asked again would be asked
+// each followGap.
 var errListNotWaited = errors.New("its magpie doesn't wait for its list to change; fetched on its schedule")
 
 // KeepRemoteListsFollowed follows the list of each Remote magpie the user
@@ -108,10 +115,20 @@ func KeepRemoteListsFollowed(ctx context.Context) {
 // followedMagpies are the Remote magpies whose lists are followed: on,
 // listing, not this magpie itself, with a schedule (their user's, or
 // RemoteMagpieEvery when none is set).
+//
+// Read from the parse kept until providers.json changes (storedFile), and
+// only a provider with an Anthropic address normalized: this runs every
+// minute, and parsing the whole file again each time was most of what an
+// idle magpie allocated for providers.
 func followedMagpies() []Provider {
-	own, _ := ownOf(load())
 	var out []Provider
-	for _, p := range own {
+	for _, p := range storedFile().Providers {
+		if strings.TrimSpace(p.Anthropic) == "" {
+			continue
+		}
+		if p = normalize(p); !hasEndpoint(p) {
+			continue
+		}
 		if p.IsRemoteMagpie() && !p.Off && p.lists() && p.Anthropic != "" && !p.SelfLeftOut() && p.RefreshInterval() > 0 {
 			out = append(out, p)
 		}
@@ -217,7 +234,7 @@ func followedOne(id string) *Provider {
 // as the list is fetched (listHeaders, signRemote), so the list the other
 // magpie compares is the one a fetch is answered.
 func waitRemoteList(ctx context.Context, p Provider, tag string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, (listWaitAsk+20)*time.Second)
+	ctx, cancel := context.WithTimeout(p.Via(ctx), (listWaitAsk+20)*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.Anthropic+"/v1/models", nil)
 	if err != nil {
@@ -233,6 +250,7 @@ func waitRemoteList(ctx context.Context, p Provider, tag string) (string, error)
 	if tag != "" {
 		req.Header.Set("If-None-Match", tag)
 	}
+	asked := time.Now()
 	res, err := p.Do(http.DefaultClient, req)
 	if err != nil {
 		return "", err
@@ -241,6 +259,12 @@ func waitRemoteList(ctx context.Context, p Provider, tag string) (string, error)
 	io.Copy(io.Discard, io.LimitReader(res.Body, 64<<20))
 	switch {
 	case res.StatusCode == http.StatusNotModified:
+		// a magpie from before this one says no wait it held, and holds
+		// each wait to its end; a 304 at once is a gateway stopping, or a
+		// list that wasn't waited for
+		if res.Header.Get(ListWaitHeader) == "" && time.Since(asked) < followQuick {
+			return "", errListNotWaited
+		}
 		return tag, nil
 	case res.StatusCode != http.StatusOK:
 		return "", fmt.Errorf("%s answered %s", remoteName(p), res.Status)
@@ -248,6 +272,16 @@ func waitRemoteList(ctx context.Context, p Provider, tag string) (string, error)
 	now := res.Header.Get("ETag")
 	if now == "" {
 		return "", errListNotWaited
+	}
+	// the list it already has, answered at once: a wait that was not held
+	// (a gateway that compares tags exactly, behind a proxy that made them
+	// weak). Asked again it is answered the same each followGap, a request
+	// a second for ever (y0ngb1n on X), so it is left to the schedule.
+	if tag != "" && strings.TrimPrefix(now, "W/") == strings.TrimPrefix(tag, "W/") {
+		if time.Since(asked) < followQuick {
+			return "", errListNotWaited
+		}
+		return tag, nil
 	}
 	return now, nil
 }

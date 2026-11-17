@@ -13,13 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/redact"
 )
@@ -175,7 +175,18 @@ type candidate struct {
 // A CPU without what pf-serve is built for runs pf-serve-base, on the
 // CPU alone: pf-serve-vulkan is built like pf-serve, and would end the
 // same way.
+//
+// On Windows on Arm pf-serve runs emulated (onArmWindows): on the CPU,
+// since the x64 pf-serve-vulkan has no x64 Vulkan driver to load there,
+// pf-serve and then pf-serve-base, for an emulation without AVX2.
 func candidates(cpu bool) []candidate {
+	if onArmWindows() {
+		out := []candidate{{exe("pf-serve"), true}}
+		if _, err := os.Stat(exe("pf-serve-base")); err == nil {
+			out = append(out, candidate{exe("pf-serve-base"), true})
+		}
+		return out
+	}
 	if !fullX86() {
 		if _, err := os.Stat(exe("pf-serve-base")); err == nil {
 			return []candidate{{exe("pf-serve-base"), true}}
@@ -373,10 +384,14 @@ func (h *helper) died() string {
 
 // startup are the lines ggml writes as it starts, every time, on a GPU
 // and on the CPU alike: what the device is, the kernels it built.
-var startup = regexp.MustCompile(`^(ggml_metal_(device_init|library_init|init|free|library_compile_pipeline)|ggml_vulkan|load_backend|register_backend|register_device):`)
+var startup = lazyre.New(`^(ggml_metal_(device_init|library_init|init|free|library_compile_pipeline)|ggml_vulkan|load_backend|register_backend|register_device):`)
 
 // trouble is a line that says something went wrong, startup's or not.
-var trouble = regexp.MustCompile(`(?i)error|fail|assert|abort|unable|cannot|can't|could not|out of memory|exception|lost`)
+var trouble = lazyre.New(`(?i)error|fail|assert|abort|unable|cannot|can't|could not|out of memory|exception|lost`)
+
+// deviceLost is a GPU the driver reset under pf-serve, as ggml's Vulkan
+// says it (vk::DeviceLostError, VK_ERROR_DEVICE_LOST) and Metal's.
+var deviceLost = lazyre.New(`(?i)DeviceLost|device[ _]lost`)
 
 // lastSaid is the last n lines of stderr that say more than ggml's
 // startup, joined.
@@ -482,11 +497,14 @@ func end(h *helper) {
 }
 
 // classify asks pf-serve, started if it isn't, what is in texts. One that
-// fails is ended and started again; one that died on the GPU is started
-// on the CPU, until the GPU is tried again. One that magpie ended on the
-// GPU for taking too long is started again on the GPU: a request too
-// slow for its time is no lost GPU. Twice in a row there is, and the CPU
-// is tried for the next. The caller holds turn.
+// fails is ended and started again. One that failed on the GPU is started
+// again on the GPU: one that died there is most often a GPU the driver
+// reset under it (vk::DeviceLostError, kongbai01203's after an idle
+// spell), which a new pf-serve gets a new device of, and one magpie ended
+// for taking too long had a request too slow for its time. Twice in a row
+// the GPU is lost, and the CPU is tried, until the GPU is tried again: at
+// once for one that died, and from the next request for one that hung,
+// whose request has waited twice already. The caller holds turn.
 func classify(texts []string) ([][]redact.Found, error) {
 	out, err := classifyTurn(texts)
 	srv.mu.Lock()
@@ -520,7 +538,7 @@ func heldBack() error {
 
 func classifyTurn(texts []string) ([][]redact.Found, error) {
 	var last error
-	for try := 0; try < 2; try++ {
+	for try := 0; try < 3; try++ {
 		srv.mu.Lock()
 		h, cpu, stop := srv.h, srv.cpu, stopCh()
 		var gone *helper
@@ -578,17 +596,19 @@ func classifyTurn(texts []string) ([][]redact.Found, error) {
 			h.kill()
 			return nil, errStopped
 		}
-		if h.hello.GPU {
-			if h.slow.Load() != nil && try == 0 {
-				// ended for taking too long: a slow request, or a
-				// GPU's hang that a new pf-serve gets past, is no lost
-				// GPU, and the try again is on the GPU
-			} else {
-				lostGPULocked(err.Error())
-			}
+		hung := h.slow.Load() != nil
+		if h.hello.GPU && try > 0 {
+			lostGPULocked(err.Error())
 		}
+		// else the try again is on the GPU: a GPU the driver reset
+		// (device lost), a crash, or a hang that a new pf-serve gets
+		// past, is no lost GPU yet
 		srv.mu.Unlock()
 		h.kill()
+		if try == 1 && (!h.hello.GPU || hung) {
+			// a third try only after the GPU died twice, on the CPU
+			break
+		}
 	}
 	return nil, fmt.Errorf("the local masking model failed: %w", last)
 }

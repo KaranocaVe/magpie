@@ -20,12 +20,13 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // balanceSource is where one provider's balance is asked and how the
@@ -399,6 +400,11 @@ const (
 func SplitWords(split []BalancePart) string {
 	out := make([]string, 0, len(split))
 	for _, p := range split {
+		if p.Expires != nil {
+			// through the last day it counts: "¥20.00 until Nov 13"
+			out = append(out, p.Text+" until "+p.Expires.Add(-time.Second).Format("Jan 2"))
+			continue
+		}
 		out = append(out, strings.ToLower(p.Label)+" "+p.Text)
 	}
 	return strings.Join(out, " · ")
@@ -760,6 +766,10 @@ type BalancePart struct {
 	Percent *float64 `json:"percent,omitempty"`
 	// Error is why the amount couldn't be read, its Text then "—".
 	Error string `json:"error,omitempty"`
+	// Expires is when the part counts no more, for a balance typed with
+	// credit that expires (key_balance_own.go); the GUI says in how many
+	// days, its Label then empty
+	Expires *time.Time `json:"expires,omitempty"`
 }
 
 // joinBalanceParts is the amounts on one line, as Balance tells them:
@@ -1578,7 +1588,7 @@ func sub2APIKeyLimits(p Provider) bool {
 // {token} is the key too: it is what a vendor's own error names the value
 // in "Authorization: Bearer {token}" (lx_78654 on Discord, whose header
 // went with "{token}" in it as written, and the vendor refused it).
-var balanceKeyNames = regexp.MustCompile(`(?i)\$?\{\{?\s*(?:key|api[_-]?key|token)\s*\}?\}`)
+var balanceKeyNames = lazyre.New(`(?i)\$?\{\{?\s*(?:key|api[_-]?key|token)\s*\}?\}`)
 
 // withBalanceKey is s with the key in place of its names, escaped for a
 // URL's query when inURL.
@@ -1779,9 +1789,9 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 	wg.Wait()
 	out = slices.DeleteFunc(out, func(q SubscriptionQuota) bool { return q.Provider == "" })
 	if ctx.Err() == nil {
-		// each balance kept, and drawn over time with its runs-out; not
-		// one estimated from a balance typed, which is no reading
-		noteBalanceHistory(slices.DeleteFunc(slices.Clone(out), func(q SubscriptionQuota) bool { return q.Estimate != nil }), time.Now())
+		// each balance kept, and drawn over time with its runs-out, on
+		// the cards themselves (an estimate is neither: noteBalanceHistory)
+		noteBalanceHistory(out, time.Now())
 		// the history of the cards read now and of those kept, a partial
 		// read (one card's refresh) keeping the others
 		h := sharedBalanceHist(slices.Concat(kept, out))

@@ -62,9 +62,8 @@ jobs:
         run: |
           set -euo pipefail
           version="custom-${GITHUB_SHA:0:7}"
-          mkdir -p dist
           binary="magpie-linux-$(go env GOARCH)"
-          go build -tags "production gtk3" -trimpath -ldflags="-s -w -X main.version=${version}" -o "dist/${binary}" .
+          make release-linux VERSION="${version}"
           go version -m "dist/${binary}"
           tar -czf "dist/${binary}.tar.gz" -C dist "${binary}"
           rm "dist/${binary}"
@@ -85,13 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           version="custom-${GITHUB_SHA:0:7}"
-          mkdir -p dist
-          go run github.com/tc-hib/go-winres@v0.3.3 make --in build/windows/winres.json --arch amd64,arm64 --out rsrc --file-version "0.0.0" --product-version "0.0.0"
-          for arch in amd64 arm64; do
-            echo "Building windows/${arch}"
-            CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" go build -tags production -trimpath -ldflags="-s -w -X main.version=${version} -H windowsgui" -o "dist/magpie-windows-${arch}.exe" .
-          done
-          rm -f rsrc_windows_*.syso
+          make release-windows VERSION="${version}"
 
       - name: Checksums
         shell: bash
@@ -136,17 +129,17 @@ jobs:
       - name: Build standalone CLI
         shell: bash
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
-          make release-cli TARGETS="${GOOS}/${GOARCH}" VERSION="custom-${GITHUB_SHA:0:7}"
+          make release-cli TARGETS="${TARGET_GOOS}/${TARGET_GOARCH}" VERSION="custom-${GITHUB_SHA:0:7}"
           cd dist
           sha256sum * > SHA256SUMS
           suffix=""
-          if [[ "$GOOS" == windows ]]; then suffix=".exe"; fi
-          test -s "magpie-cli-${GOOS}-${GOARCH}${suffix}"
+          if [[ "$TARGET_GOOS" == windows ]]; then suffix=".exe"; fi
+          test -s "magpie-cli-${TARGET_GOOS}-${TARGET_GOARCH}${suffix}"
       - uses: actions/upload-artifact@v4
         with:
           name: magpie-custom-cli-${{ matrix.goos }}-${{ matrix.goarch }}

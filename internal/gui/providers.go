@@ -93,6 +93,9 @@ type modelJSON struct {
 	// provider (#2578): only for a model Claude Desktop, installed here,
 	// is shown and names after its own catalog, "" for every other.
 	Desktop string `json:"desktop,omitempty"`
+	// Disabled is the pattern of Settings' disabled models (#1867) that
+	// turns it off, "" for a model that isn't
+	Disabled string `json:"disabled,omitempty"`
 	// what it costs, USD per million tokens (#819): the price the user set
 	// for it, and its list price, its vendor's else its maker's, before the
 	// provider's price rate
@@ -213,7 +216,8 @@ type providerJSON struct {
 	// (provider.PinHosts), a preset's pointed at their own server too
 	TakesServerPin bool `json:"takesServerPin,omitempty"`
 	// its Responses turns over the Responses WebSocket (provider.Socket,
-	// #5781): auto, on or ""; TakesSocket: a provider of a key with a
+	// #5781): auto, on, off or "" (auto on OpenAI's own API, HTTP
+	// elsewhere: provider.SocketMode); TakesSocket: a provider of a key with a
 	// Responses URL
 	Socket      string `json:"socket"`
 	TakesSocket bool   `json:"takesSocket"`
@@ -455,6 +459,9 @@ type providerJSON struct {
 	// how many requests each key or account sends the vendor in any
 	// minute, 0 for no limit (coeo91 on Discord)
 	MaxRPM int `json:"maxRPM,omitempty"`
+	// MaxImages is how many images one request to it may carry, by the
+	// user's word: by model id, "*" for all (provider.Provider.MaxImages)
+	MaxImages map[string]int `json:"maxImages,omitempty"`
 	// RateWindows are the time-of-day windows it bills at its own rate
 	// (#2463), as the editor opens on them
 	RateWindows []provider.RateWindow `json:"rateWindows,omitempty"`
@@ -988,7 +995,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, ThisDevice: p.ThisDevice, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
-		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
+		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, MaxImages: p.MaxImages,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
 	}
 	if p.Account != nil && p.Account.Agent == p.ID {
@@ -1082,7 +1089,10 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	if out.KeyList == nil {
 		out.KeyList = []provider.KeyInfo{}
 	}
-	// a key the gateway passes over after a failure says so on its row
+	// a key the gateway passes over after a failure says so on its row,
+	// with the vendor's words, as an account's row does (accountRests):
+	// without them a key's "400 · out of credit" said nothing of what its
+	// vendor answered (@YsiCing on X)
 	restKey := p.RestKeys()
 	for i, k := range out.KeyList {
 		if !k.On {
@@ -1090,7 +1100,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 		key := restKey(k)
 		if r, ok := keyRestOf(key); ok {
-			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key, Probed: r.Probed, Rate: r.Rate}
+			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key, Probed: r.Probed, By: r.By, Error: r.Error, Rate: r.Rate}
 		}
 	}
 	// and one with a spend cap, what it has spent of it (the gateway
@@ -1199,6 +1209,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	// the provider's catalogs worked out once, and each model priced once
 	// for its list price and whether it is free
 	pricer := p.Pricer()
+	disabled := provider.DisabledPattern()
 	// each model's provider/model ref, made once: the settings' maps and
 	// every agent's hidden list are looked up by it
 	var refs []string
@@ -1276,7 +1287,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		// a value the page reads as its default isn't sent: the window and
 		// reply limit the vendor listed are the ones in use unless the user
 		// set their own, and most models merge by their own id
-		if j.Merge = provider.MergeName(m.ID); j.Merge == m.ID {
+		if j.Merge = provider.MergeName(p, m.ID); j.Merge == m.ID {
 			j.Merge = ""
 		}
 		if j.Listed == j.Context {
@@ -1286,6 +1297,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			j.ListedOutput = 0
 		}
 		j.Desktop = desktop[ref]
+		j.Disabled = disabled(p.ID, m.ID)
 		if mp, ok := held.ModelPrices[ref]; ok {
 			if pr, bad := mp.Price(); bad == "" {
 				j.Price = &pr
@@ -1922,7 +1934,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// save that leaves it out keeps it
 			HTTP1 *bool `json:"http1"`
 			// Socket is how its Responses turns go over the Responses
-			// WebSocket (#5781): auto, on, or "" for HTTP alone; a save
+			// WebSocket (#5781): auto, on, off, or "" for its default; a save
 			// that leaves it out keeps it
 			Socket *string `json:"socket"`
 			// LimitRestOff is whether a quota refusal or a 429 leaves it
@@ -2257,6 +2269,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// its key when the form left it blank
 			if pr, err := provider.FromPreset(in.Preset); err == nil && in.Chat == "" && in.Responses == "" && in.Anthropic == "" && in.Gemini == "" {
 				pr.Key, pr.Models, pr.Fallback, pr.Headers, pr.BalanceToken, pr.Contexts = in.Key, in.Models, in.Fallback, in.Headers, in.BalanceToken, in.Contexts
+				pr.MaxImages = in.MaxImages
 				pr.ZhipuTeam = in.ZhipuTeam
 				pr.NoModels = in.NoModels
 				pr.BestInFamily = in.BestInFamily
@@ -2688,6 +2701,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.Off = old.Off                                              // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
+					}
+					if in.MaxImages == nil {
+						in.MaxImages = old.MaxImages // likewise
 					}
 					if in.Key == old.Key {
 						in.KeyName, in.KeyProtocol, in.KeyWeight, in.KeyPlan = old.KeyName, old.KeyProtocol, old.KeyWeight, old.KeyPlan

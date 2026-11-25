@@ -476,7 +476,11 @@ type providerJSON struct {
 	// what one of a sub2api relay's dollars cost the user, and each key's
 	// group rate read from the relay, by its id (@YIXIE233 on X)
 	TopUpRate     float64            `json:"topUpRate,omitempty"`
+	RateReadHours int                `json:"rateReadHours,omitempty"`
 	KeyGroupRates map[string]float64 `json:"keyGroupRates,omitempty"`
+	// what each key's read group rate is multiplied by, by its id, where
+	// it isn't 1 (@YIXIE233 on X)
+	KeyRateFactors map[string]float64 `json:"keyRateFactors,omitempty"`
 
 	// what it charges against the official price, 0 for that (#819)
 	PriceRate float64     `json:"priceRate,omitempty"`
@@ -573,6 +577,9 @@ type accessKeyJSON struct {
 	Vendor    string `json:"vendor"`
 	ID        string `json:"id"`
 	SecretSet bool   `json:"secretSet"`
+	// TokenSet is that an AWS access key has a session token saved, which
+	// is never sent here either
+	TokenSet bool `json:"tokenSet,omitempty"`
 }
 
 // presetAccessKey is whose account access key a preset's plans are read
@@ -1028,7 +1035,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Resolve: p.Resolve, TakesResolve: p.TakesResolve(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, ThisDevice: p.ThisDevice, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
-		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates, TopUpRate: p.TopUpRate, KeyGroupRates: keyGroupRatesOf(p),
+		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates, TopUpRate: p.TopUpRate, RateReadHours: p.RateReadHours, KeyGroupRates: keyGroupRatesOf(p), KeyRateFactors: p.KeyRateFactors,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
 		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, MaxImages: p.MaxImages,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
@@ -1086,7 +1093,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		vendor, _ = presetAccessKey(*pr)
 	}
 	if vendor != "" || p.AccessKeyID != "" || p.SecretAccessKey != "" {
-		out.AccessKey = &accessKeyJSON{Vendor: vendor, ID: p.AccessKeyID, SecretSet: p.SecretAccessKey != ""}
+		out.AccessKey = &accessKeyJSON{Vendor: vendor, ID: p.AccessKeyID, SecretSet: p.SecretAccessKey != "", TokenSet: p.SessionToken != ""}
 	}
 	if p.IsVertex() {
 		out.Vertex = &provider.Vertex{}
@@ -2057,8 +2064,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// TopUpRate is what one of a sub2api relay's dollars cost
 			// (@YIXIE233 on X): a number, null or 0 for none; left out,
 			// it is kept
-			TopUpRate    json.RawMessage `json:"topUpRate"`
-			AccountOrder []string        `json:"accountOrder"`
+			TopUpRate json.RawMessage `json:"topUpRate"`
+			// RateReadHours is how often, in hours, its keys' group rates
+			// are read (@YIXIE233 on X): 1 to 168, null or 0 for the
+			// default six; left out, it is kept
+			RateReadHours json.RawMessage `json:"rateReadHours"`
+			AccountOrder  []string        `json:"accountOrder"`
 			// New is set by the editor's Add: the provider is one more, never
 			// one replacing the provider that has its id or name
 			New bool `json:"new"`
@@ -2071,6 +2082,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// when sent blank, unless ClearAccessKey drops it.
 			AccessKeyID    *string `json:"accessKeyID"`
 			ClearAccessKey bool    `json:"clearAccessKey"`
+			// ClearSessionToken drops an AWS access key's session token
+			// (SessionToken), which a blank one keeps while the key's ID
+			// is the same (#7687)
+			ClearSessionToken bool `json:"clearSessionToken"`
 			// From is the id the provider had: another is a rename
 			From string `json:"from"`
 			// LibraryMCP, on a Remote magpie, is its editor's switch: its
@@ -2356,6 +2371,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.ReplyHeaders = in.ReplyHeaders
 				pr.PassHeaders = in.PassHeaders
 				pr.SecretAccessKey = in.SecretAccessKey
+				pr.SessionToken = in.SessionToken
 				pr.Vertex = in.Vertex
 				pr.Searches = in.Searches
 				pr.PinUpstream = in.PinUpstream
@@ -2458,11 +2474,25 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 			in.TopUpRate = topUp
+			every, keepEvery, err := rateReadHoursOf(req.RateReadHours)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			in.RateReadHours = every
 			// each key's own rate, by its id (@tnt12231 on X): {} takes
 			// them all off, left out they are kept
 			for k, r := range in.KeyPriceRates {
 				if bad := provider.KeyPriceRateOK(r); bad != "" {
 					fail(rw, fmt.Errorf("%s, not %v (key %s)", bad, r, k))
+					return
+				}
+			}
+			// each key's factor on its read rate (@YIXIE233 on X): {}
+			// takes them all off, left out they are kept
+			for k, f := range in.KeyRateFactors {
+				if bad := provider.KeyRateFactorOK(f); bad != "" {
+					fail(rw, fmt.Errorf("%s, not %v (key %s)", bad, f, k))
 					return
 				}
 			}
@@ -2491,6 +2521,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				in.AccessKeyID = strings.TrimSpace(*req.AccessKeyID)
 			}
 			in.SecretAccessKey = strings.TrimSpace(in.SecretAccessKey)
+			in.SessionToken = strings.TrimSpace(in.SessionToken)
 			var old *provider.Provider
 			if req.New && in.NativeCompaction && !in.CarriesCompaction() {
 				fail(rw, fmt.Errorf("%s can't carry Codex's native compaction: only a provider with a Responses API, a ChatGPT account or GitHub Copilot can", cmp.Or(in.Name, in.ID)))
@@ -2618,11 +2649,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if keepTopUp && old != nil {
 					in.TopUpRate = old.TopUpRate
 				}
-				if in.TopUpRate > 0 && (old == nil || old.TopUpRate != in.TopUpRate) {
+				if keepEvery && old != nil {
+					in.RateReadHours = old.RateReadHours
+				}
+				if in.TopUpRate > 0 && (old == nil || old.TopUpRate != in.TopUpRate || old.RateReadHours != in.RateReadHours) {
 					defer provider.ReadKeyRatesSoon()
 				}
 				if in.KeyPriceRates == nil && old != nil {
 					in.KeyPriceRates = old.KeyPriceRates
+				}
+				if in.KeyRateFactors == nil && old != nil {
+					in.KeyRateFactors = old.KeyRateFactors
 				}
 				if keepWins && old != nil {
 					in.RateWindows = old.RateWindows
@@ -2736,6 +2773,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if in.SecretAccessKey == "" && old != nil && !req.ClearAccessKey {
 					in.SecretAccessKey = old.SecretAccessKey
 				}
+				// an AWS access key's session token likewise, while the
+				// key is the one it was given with: another key's would
+				// only get its requests refused (#7687)
+				if in.SessionToken == "" && old != nil && !req.ClearAccessKey && !req.ClearSessionToken && in.AccessKeyID == old.AccessKeyID {
+					in.SessionToken = old.SessionToken
+				}
 				// and a Vertex AI provider's project and credentials
 				if in.Vertex == nil && old != nil {
 					in.Vertex = old.Vertex
@@ -2837,6 +2880,16 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 						return
 					}
 					in.ID = to
+				}
+			}
+			// the models ticked here that weren't before are ticked for the
+			// agents shown only their picks that take a provider's in
+			// (eiyuuzaki2333 on X), so a model isn't ticked twice; before
+			// the list is fetched, so a model its vendor adds stays out
+			if p, err := provider.Find(in.ID); err == nil {
+				if _, err := provider.JoinPicks(*p, old); err != nil {
+					fail(rw, err)
+					return
 				}
 			}
 			if len(moreKeys) > 0 {
@@ -3387,14 +3440,19 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				out = append(out, x)
 			}
 			// embedding and rerank models need no pick: they are served
-			// on /v1/embeddings and /v1/rerank as listed (heatonz)
-			retrieval := 0
+			// on /v1/embeddings and /v1/rerank as listed (heatonz), and
+			// the form lists them by kind, as a saved provider's editor
+			// does (solider1394 on X: a count alone read as no models)
+			var embed, rerank []string
 			for _, m := range all {
-				if m.Serves == catalog.ServesEmbedding || m.Serves == catalog.ServesRerank {
-					retrieval++
+				switch m.Serves {
+				case catalog.ServesEmbedding:
+					embed = append(embed, m.ID)
+				case catalog.ServesRerank:
+					rerank = append(rerank, m.ID)
 				}
 			}
-			writeJSON(rw, map[string]any{"models": out, "retrieval": retrieval})
+			writeJSON(rw, map[string]any{"models": out, "embedIds": embed, "rerankIds": rerank})
 			return
 		case "models":
 			p, err := provider.Find(in.ID)
@@ -3886,6 +3944,33 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeProvidersJSON(rw, providersState())
 	})
+	// a Mistral Vibe plan's key: a sign-in to Mistral in the user's
+	// browser, as Vibe's own, traded for the key the editor then saves
+	mux.HandleFunc("POST /api/mistral/signin", func(rw http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		id, u, err := provider.StartMistralSignIn(ctx)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		}{id, u})
+	})
+	mux.HandleFunc("GET /api/mistral/signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
+		state, why, key := provider.MistralSignInState(r.PathValue("id"))
+		writeJSON(rw, struct {
+			State string `json:"state"`
+			Error string `json:"error,omitempty"`
+			Key   string `json:"key,omitempty"`
+		}{state, why, key})
+	})
+	mux.HandleFunc("POST /api/mistral/signin/{id}/cancel", func(rw http.ResponseWriter, r *http.Request) {
+		provider.CancelMistralSignIn(r.PathValue("id"))
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// the Qwen AI platform's Token Plan windows: a sign-in to the
 	// platform, approved in the user's browser, the provider's own
 	qianwenOf := func(rw http.ResponseWriter, r *http.Request) (string, bool) {
@@ -3969,6 +4054,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				provider.NoticePartners(in.IDs...)
 			}
 		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	// a page opened whose openings are counted (provider.CountPage): the
+	// Plugins page, where its partners are listed
+	mux.HandleFunc("POST /api/page", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Page string }
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&in)
+		provider.CountPage(in.Page)
 		rw.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/open", func(rw http.ResponseWriter, r *http.Request) {
@@ -4134,6 +4227,25 @@ func topUpRateOf(raw json.RawMessage) (r float64, keep bool, err error) {
 	}
 	if bad := provider.TopUpRateOK(*n); bad != "" {
 		return 0, false, fmt.Errorf("%s, not %v", bad, *n)
+	}
+	return *n, false, nil
+}
+
+// rateReadHoursOf is a save's rateReadHours: keep when the save left it
+// out, 0 for null, else the hours.
+func rateReadHoursOf(raw json.RawMessage) (h int, keep bool, err error) {
+	if len(raw) == 0 {
+		return 0, true, nil
+	}
+	var n *int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, false, fmt.Errorf("rates are read every whole number of hours, like 3, not %s", raw)
+	}
+	if n == nil {
+		return 0, false, nil
+	}
+	if bad := provider.RateReadHoursOK(*n); bad != "" {
+		return 0, false, fmt.Errorf("%s, not %d", bad, *n)
 	}
 	return *n, false, nil
 }

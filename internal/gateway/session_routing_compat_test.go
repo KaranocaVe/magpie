@@ -62,37 +62,50 @@ func compatibilityResponsesProvider(t *testing.T, id, model string, handler http
 
 func TestSessionRoutingOverrideEncryptedReasoning(t *testing.T) {
 	f := newOverrideFixture(t)
-	writer, other := &sealer{name: "writer"}, &sealer{name: "other"}
+	writer, target := &sealer{name: "writer"}, &sealer{name: "target"}
 	compatibilityResponsesProvider(t, "writer", "grok-4", writer)
-	compatibilityResponsesProvider(t, "other", "grok-4", other)
-	f.group(provider.Group{ID: "reasoning", Name: "Reasoning", Members: []string{"writer/grok-4", "other/grok-4"},
+	compatibilityResponsesProvider(t, "target", "grok-4", target)
+	f.group(provider.Group{ID: "reasoning", Name: "Reasoning", Members: []string{"writer/grok-4", "target/grok-4"},
 		Routing: provider.Ordered, Affinity: provider.AffinityStrict})
 	const model = "group/reasoning"
-	const session = "reasoning-thread"
 	const seal = "sealed-by-writer"
-	turn := func(body string, status int, text string) Route {
+	turn := func(t *testing.T, session, body, text string) Route {
 		t.Helper()
-		return sessionCompatibilityTurn(t, f.server, "/v1/responses", session, "", body, status, text)
+		return sessionCompatibilityTurn(t, f.server, "/v1/responses", session, "", body, 200, text)
 	}
 	first := `{"model":"group/reasoning","stream":true,"input":[` + leadAsk + `]}`
 	next := `{"model":"group/reasoning","stream":true,"input":[` + leadAsk +
 		`,{"type":"reasoning","id":"rs_writer","summary":[],"encrypted_content":"` + seal +
 		`"},{"type":"function_call","call_id":"tool_1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"tool_1","output":"ok"}]}`
-	turn(first, 200, seal)
-	writer.sent()
 
-	f.set(session, model, "other", sessionrouting.Prefer)
-	assertCompatibilityTrace(t, turn(next, 200, "from writer"), "skipped", "encrypted reasoning", "writer")
-	f.set(session, model, "other", sessionrouting.Strict)
-	assertCompatibilityTrace(t, turn(next, 400, "encrypted reasoning"), "rejected", "encrypted reasoning", "")
+	t.Run("no saved affinity", func(t *testing.T) {
+		const session = "resumed-thread"
+		f.set(session, model, "target", sessionrouting.Strict)
+		sameRelaySeal := strings.Replace(next, seal, "sealed-by-target", 1)
+		assertCompatibilityTrace(t, turn(t, session, sameRelaySeal, "from target"), "applied", "", "target")
+		if got := target.sent(); len(got) != 1 || !slices.Equal(got[0], []string{"sealed-by-target"}) {
+			t.Fatalf("target received %q, want one intact request", got)
+		}
+	})
 
-	f.set(session, model, "writer", sessionrouting.Strict)
-	assertCompatibilityTrace(t, turn(next, 200, "from writer"), "applied", "", "writer")
-	if got := writer.sent(); len(got) != 2 || !slices.Equal(got[0], []string{seal}) || !slices.Equal(got[1], []string{seal}) {
-		t.Fatalf("writer received %q, want two intact seals", got)
-	}
-	if got := other.sent(); len(got) != 0 {
-		t.Fatalf("incompatible provider received %q", got)
+	for _, mode := range []sessionrouting.Mode{sessionrouting.Strict, sessionrouting.Prefer} {
+		t.Run(string(mode)+" with foreign reasoning", func(t *testing.T) {
+			session := string(mode) + "-thread"
+			turn(t, session, first, seal)
+			writer.sent()
+			f.set(session, model, "target", mode)
+			route := turn(t, session, next, "from target")
+			assertCompatibilityTrace(t, route, "applied", "", "target")
+			if len(route.Tries) != 2 || route.Tries[0].Fail != failForeign {
+				t.Fatalf("ordinary encrypted reasoning retry missing: %+v", route.Tries)
+			}
+			if got := target.sent(); len(got) != 2 || !slices.Equal(got[0], []string{seal}) || len(got[1]) != 0 {
+				t.Fatalf("target received %q, want intact request and existing retry without refused reasoning", got)
+			}
+			if got := writer.sent(); len(got) != 0 {
+				t.Fatalf("original account received %q", got)
+			}
+		})
 	}
 }
 

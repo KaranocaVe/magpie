@@ -24,11 +24,11 @@ User-created forks use their own Codex thread.
 
 The gateway checks the candidate plan for Gateway Key and group permissions,
 account pins, media and context-window requirements, sealed subagent messages
-and native compaction. When ordinary Responses reasoning carries ciphertext,
-a matching recent writer account is required before applying an override.
-Without that evidence, Prefer uses the ordinary route and Strict refuses.
-The existing sealed task reader and checkpoint checks still apply, including
-the fork's compatibility settings below.
+and native compaction. The fork's sealed task reader and checkpoint
+compatibility settings apply. Ordinary Responses reasoning follows the same
+forwarding and retry rules as other routes. If a provider rejects foreign
+ciphertext, the gateway handles the refusal within the override's candidate
+plan.
 
 An eligible override relaxes strict automatic affinity into a preference for
 the previous account. Rules still run and supply their parameters. Prefer

@@ -23,7 +23,6 @@ type SessionOverrideTrace struct {
 	Result         string              `json:"result"`
 	Reason         string              `json:"reason,omitempty"`
 	ActualProvider string              `json:"actualProvider,omitempty"`
-	writer         stick
 }
 
 func routingSessionID(id string) string {
@@ -128,7 +127,6 @@ func (o *SessionOverrideTrace) snapshot() *SessionOverrideTrace {
 		return nil
 	}
 	out := *o
-	out.writer = stick{}
 	return &out
 }
 
@@ -160,7 +158,7 @@ func (o *SessionOverrideTrace) refusal(reason string) string {
 }
 
 func (o *SessionOverrideTrace) matches(c candidate) bool {
-	return c.p.ID == o.Provider && (o.writer.who == "" || c.sameVendor(o.writer.who, o.writer.model))
+	return c.p.ID == o.Provider
 }
 
 func (o *SessionOverrideTrace) has(cs []candidate) bool {
@@ -206,35 +204,6 @@ func (o *SessionOverrideTrace) promote(cs []candidate, pl planned) ([]candidate,
 	}
 	pl.order = order
 	return out, pl
-}
-
-// Reasoning is opaque. The last account known to have answered the
-// conversation is the only evidence available here about ordinary Responses
-// reasoning. Sealed subagent messages and native checkpoints have separate
-// checks before the override is applied.
-func (o *SessionOverrideTrace) compatibleReasoning(scope string, in http.Header, from provider.Protocol, plain []byte, checkpoint *checkpointWriter, cs []candidate) bool {
-	if from != provider.Responses || !bodyHas(plain, "encrypted_content") {
-		return true
-	}
-	if checkpoint != nil {
-		// Checkpoint readers have already been checked. Reasoning can be
-		// present alongside the checkpoint and needs its own check.
-		if b, ok := withoutCompaction(plain); ok {
-			plain = b
-		}
-	}
-	if len(seals(plain)) == 0 {
-		return true
-	}
-	key := o.affinityKey(scope, in, plain)
-	sticks.Lock()
-	st, ok := stickOf(key)
-	sticks.Unlock()
-	if !ok || time.Since(st.at) > stickKeep {
-		return false
-	}
-	o.writer = st
-	return o.has(cs)
 }
 
 func sessionOverrideUnavailable(o *SessionOverrideTrace, pl planned, reason string) (int, string) {

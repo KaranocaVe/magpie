@@ -3624,9 +3624,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if preference != nil && preference.Reason != "" {
 		preference = nil
 	}
-	if preference != nil && overrideConstraint == "" && !preference.compatibleReasoning(scope, r.Header, from, plain, checkpoint, cands) {
-		overrideConstraint = "provider cannot be shown to read the conversation's encrypted reasoning"
-	}
 	// A vision rule may choose a vision model even when the group has
 	// text-only fallbacks. A failure must not send a current user image to
 	// one of them. Historical images and tool results are omitted per

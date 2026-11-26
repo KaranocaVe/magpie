@@ -1018,7 +1018,10 @@ magpie.plugin("sessions", (ctx) => {
     // a session shown under another stays in sight: its folder and every
     // session it is under are unfolded
     for (const id of [detail, focus?.agent === data.agent ? focus.id : ""]) {
-      if (!id || !rootOf.has(id)) continue;
+      if (!id) continue;
+      const session = list.find((s) => s.id === (rootOf.get(id) || id));
+      if (session) opened.add(groupOf(session));
+      if (!rootOf.has(id)) continue;
       const byId = new Map(list.map((s) => [s.id, s]));
       for (let p = byId.get(byId.get(id)?.parent_session), n = 0; p && n < MAX_DEPTH; p = byId.get(p.parent_session), n++) subsOpen.add(p.agent + "/" + p.id);
     }
@@ -1479,6 +1482,104 @@ magpie.plugin("sessions", (ctx) => {
     return wrap;
   }
 
+  // Session model routing overrides are managed beside the session details.
+  // The gateway owns validation and candidate filtering. This client only
+  // presents the stable session identity and submits explicit edits.
+  function sessionOverrideData(s) {
+    return api("session-routing?options=1&agent=" + encodeURIComponent(s.agent || agent) + "&session=" + encodeURIComponent(s.id || ""));
+  }
+  function routingOverridePanel(s) {
+    const panel = el("section", "sm-routing-overrides");
+    panel.setAttribute("aria-labelledby", "sm-routing-title-" + (s.id || "session"));
+    const head = el("div", "row-head sm-routing-head");
+    const title = el("span", "label", t("Routing overrides"));
+    title.id = "sm-routing-title-" + (s.id || "session");
+    const note = el("span", "note", t("Per-model provider preference for this session"));
+    const add = el("button", "text", t("Add model override"));
+    add.type = "button";
+    head.append(title, note, el("span", "grow"), add);
+    const body = el("div", "list sm-routing-list");
+    const state = { data: null, busy: false };
+    panel.append(head, body);
+    const save = async (action, item, controls) => {
+      if (state.busy) return;
+      state.busy = true;
+      controls?.forEach((x) => { x.disabled = true; });
+      try {
+        await api("session-routing", { action, agent: s.agent || agent, session: s.id, ...item });
+        state.data = await sessionOverrideData(s);
+        draw();
+        status(t(action === "delete" ? "Routing override deleted" : "Routing override saved"), "ok");
+      } catch (e) { status(e.message, "err"); }
+      finally { state.busy = false; controls?.forEach((x) => { x.disabled = false; }); }
+    };
+    const field = (label, control) => { const l = el("label", "sm-routing-field"); l.append(el("span", "k", label), control); return l; };
+    const select = (options, value, placeholder) => {
+      const x = el("select");
+      if (placeholder) { const op = el("option", "", placeholder); op.value = ""; x.append(op); }
+      for (const o of options) { const op = el("option", "", o.name); op.value = o.id; op.disabled = o.available === false; x.append(op); }
+      x.value = value || "";
+      return x;
+    };
+    const editor = (item = {}) => {
+      const row = el("div", "sm-routing-editor");
+      const models = [...(state.data?.models || [])];
+      if (item.model && !models.some((m) => m.id === item.model)) models.unshift({ id: item.model, name: item.model });
+      const model = select(models, item.model, t("Select model"));
+      model.disabled = !!item.model;
+      let provider;
+      const providerField = field(t("Provider"), el("select"));
+      const updateProviders = (value = "") => {
+        const names = new Map((state.data?.providers || []).map((p) => [p.id, p.name]));
+        const ids = [...(models.find((m) => m.id === model.value)?.providers || [])];
+        if (item.provider && !ids.includes(item.provider)) ids.unshift(item.provider);
+        provider = select(ids.map((id) => ({ id, name: names.get(id) || id })), value, t("Select provider"));
+        providerField.lastElementChild.replaceWith(provider);
+      };
+      updateProviders(item.provider);
+      model.onchange = () => updateProviders();
+      const mode = select([{ id: "prefer", name: t("Prefer") }, { id: "strict", name: t("Strict") }], item.mode || "prefer");
+      const saveBtn = el("button", "text", t("Save")); saveBtn.type = "button";
+      const cancel = el("button", "text", t("Cancel")); cancel.type = "button";
+      saveBtn.onclick = () => {
+        if (!model.value || !provider.value) { status(t("Choose a model and provider"), "err"); return; }
+        save("set", { model: model.value, provider: provider.value, mode: mode.value }, [provider, mode, saveBtn, cancel]);
+      };
+      cancel.onclick = draw;
+      row.append(field(t("Model"), model), providerField, field(t("Mode"), mode), saveBtn, cancel);
+      return row;
+    };
+    const draw = () => {
+      body.replaceChildren();
+      if (!state.data) { body.append(el("p", "usage-note", t("Loading routing overrides…"))); return; }
+      const items = state.data.overrides || [];
+      if (!items.length) body.append(el("p", "usage-note", t("No model overrides. This session follows its routing group.")));
+      for (const item of items) {
+        const row = el("div", "row sm-routing-item");
+        const words = el("div", "sm-routing-words");
+        const model = item.model || "";
+        const provider = item.provider || "";
+        words.append(el("span", "name", model), el("span", "sub", [provider, item.mode === "strict" ? t("Strict") : t("Prefer"), item.inheritedFrom ? t("Inherited from {session}", { session: item.inheritedFrom }) : ""].filter(Boolean).join(" · ")));
+        if (item.valid === false || item.available === false) { const bad = el("span", "sm-routing-invalid", item.reason ? t(item.reason) : t("Provider unavailable")); words.append(bad); }
+        const edit = el("button", "text", t("Edit")); edit.type = "button"; edit.onclick = () => { row.replaceWith(editor(item)); };
+        const del = el("button", "text danger", t("Delete")); del.type = "button"; del.onclick = () => save("delete", { model }, [edit, del]);
+        row.append(words, el("span", "grow"), edit, del); body.append(row);
+      }
+      if (state.data.inherited?.length) {
+        const inherited = el("p", "usage-note", t("Inherited from parent session")); body.append(inherited);
+      }
+      const clear = el("button", "text danger sm-routing-clear", t("Clear all overrides")); clear.type = "button";
+      clear.disabled = !items.length;
+      clear.onclick = () => save("clear", {}, [clear]);
+      body.append(clear);
+    };
+    add.disabled = true;
+    add.onclick = () => { if (!body.querySelector(".sm-routing-editor")) body.prepend(editor()); };
+    draw();
+    sessionOverrideData(s).then((x) => { state.data = x || { overrides: [] }; add.disabled = false; draw(); }, (e) => { body.replaceChildren(el("p", "usage-note", e.message)); });
+    return panel;
+  }
+
   function details(s) {
     const d = el("div", "sess-detail");
     const line = (k, v, extra) => {
@@ -1505,6 +1606,7 @@ magpie.plugin("sessions", (ctx) => {
     }
     sessUsageDetail(d, s, line);
     if (s.path) line(t("File"), s.path + (s.files > 1 ? " " + t("+{n} more", { n: s.files - 1 }) : ""));
+    d.append(routingOverridePanel(s));
     if (s.transcript) {
       const b = el("button", "text sess-talk-btn", t("Show conversation"));
       b.type = "button";

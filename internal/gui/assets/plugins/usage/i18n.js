@@ -2,6 +2,15 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Session routing override": "会话路由覆盖",
+    "Override session and model": "覆盖的会话和模型",
+    "Inherited from": "继承自",
+    "Override result": "覆盖结果",
+    "Applied": "已应用",
+    "Fell back": "已回退",
+    "Skipped": "已跳过",
+    "Rejected": "已拒绝",
+    "Actual provider": "实际渠道",
     "Other model": "其他模型",
     "Check…": "检查…",
     "Tries that failed, those handed on to another provider too": "失败的尝试，包括转交给其他供应商的",

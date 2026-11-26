@@ -123,7 +123,7 @@ func liftCodexHold(user string) {
 
 // writeCodexHeld answers a turn on a held account as ChatGPT did, with
 // when it is back as Retry-After, and says so in the request log.
-func (s *Server) writeCodexHeld(w http.ResponseWriter, r *http.Request, h codexHold, base string, on *provider.Provider, model string, start time.Time) {
+func (s *Server) writeCodexHeld(w http.ResponseWriter, r *http.Request, h codexHold, base string, on *provider.Provider, model string, start time.Time, override *SessionOverrideTrace) {
 	wait := time.Until(h.until)
 	for k, vs := range h.codex {
 		w.Header()[k] = vs
@@ -137,7 +137,7 @@ func (s *Server) writeCodexHeld(w http.ResponseWriter, r *http.Request, h codexH
 		what = "out of its allowance"
 	}
 	said := provider.APIError(h.body, http.StatusText(h.status)) + " (" + what + ": not asked again before " + heldClock(h.until, time.Now()) + ")"
-	s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: model,
+	s.recordNativeSessionRefusal(r, override, Call{Time: start, From: provider.Responses, To: provider.Responses, Model: model,
 		Provider: "openai", Agent: callerOf(r).agent, Kind: callKind(r.Header), Status: h.status,
 		Millis: time.Since(start).Milliseconds(), Error: codexWho(base, on) + ": " + said, headers: headerLogOf(r.Context())})
 }

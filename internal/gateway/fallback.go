@@ -2600,8 +2600,9 @@ func holds(c candidate, tokens int) bool {
 // under a longer conversation, left out without a word, and Claude Code
 // handed the 429). Its overflow tells the agent to compact, after which
 // the fallback holds it; the 429 told it only to wait for hours.
-func roomy(cs []candidate, pl planned, from provider.Protocol, body []byte) (out []candidate, _ planned, small []candidate, smallW []Weighed) {
-	if len(cs) < 2 {
+func roomy(cs []candidate, pl planned, from provider.Protocol, body []byte, rejectTooSmall ...bool) (out []candidate, _ planned, small []candidate, smallW []Weighed) {
+	requireRoom := len(rejectTooSmall) != 0 && rejectTooSmall[0]
+	if len(cs) == 0 || len(cs) == 1 && !requireRoom {
 		return cs, pl, nil, nil
 	}
 	served := sync.OnceValue(provider.Served) // the catalog, read once
@@ -2619,7 +2620,7 @@ func roomy(cs []candidate, pl planned, from provider.Protocol, body []byte) (out
 	}
 	// one model has nothing to choose between, and a body shorter than
 	// the least window can't estimate past it: neither is parsed
-	if len(windows) < 2 || least == 0 || len(body)/4 < least {
+	if len(windows) < 2 && !requireRoom || least == 0 || len(body)/4 < least {
 		return cs, pl, nil, nil
 	}
 	req, err := parse(from, body)
@@ -2644,7 +2645,7 @@ func roomy(cs []candidate, pl planned, from provider.Protocol, body []byte) (out
 			order = append(order, pl.order[i])
 		}
 	}
-	if len(out) == 0 || len(out) == len(cs) {
+	if len(out) == 0 && !requireRoom || len(out) == len(cs) {
 		return cs, pl, nil, nil
 	}
 	if parallel {

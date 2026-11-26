@@ -78,13 +78,16 @@ func requestSessionMetadata(h http.Header, body []byte) sessionMetadata {
 			}
 		}
 	}
-	projectedTurn := m.Turn
+	projectedTurn, projectedThread := m.Turn, m.Thread
 	m = sessionMetadata{}
 	if json.Unmarshal([]byte(h.Get("x-codex-turn-metadata")), &m) != nil {
-		return sessionMetadata{Turn: projectedTurn}
+		return sessionMetadata{Turn: projectedTurn, Thread: projectedThread}
 	}
 	if projectedTurn != "" {
 		m.Turn = projectedTurn
+	}
+	if m.Thread == "" {
+		m.Thread = projectedThread
 	}
 	return m
 }

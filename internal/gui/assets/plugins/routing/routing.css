@@ -1252,3 +1252,19 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .rt-acts-foot button.text { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-acts-foot button.text:hover { color: var(--fg); }
 .rt-acts-foot button.text[hidden] { display: none; }
+
+.rt-session-overrides { margin: 0 0 12px; }
+.rt-session-search { width: min(320px, 42vw); min-width: 140px; }
+.rt-session-list { display: flex; flex-direction: column; gap: 6px; }
+.rt-session-row { min-height: 40px; padding: 6px 9px; }
+.rt-session-words { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rt-session-words .name { font-family: var(--code-font, var(--code)); font-size: 12px; }
+.rt-session-words .sub { color: var(--muted); font-size: 11px; }
+.rt-session-invalid { color: var(--red); font-size: 11px; }
+.rt-session-editor { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(180px, 1fr) minmax(140px, 1fr) 90px auto auto; align-items: center; gap: 7px; padding: 8px; }
+.rt-session-editor input, .rt-session-editor select { min-width: 0; width: 100%; }
+.rt-session-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+@media (max-width: 760px) {
+  .rt-session-editor { grid-template-columns: 1fr 1fr; }
+  .rt-session-id { grid-column: 1 / -1; }
+}

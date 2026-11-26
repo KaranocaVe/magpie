@@ -11,6 +11,56 @@ This page covers how a request is routed. Plugins that change requests and
 replies are in [Gateway middleware](gateway-middleware.md). Subscriptions
 served by a plugin are in [Provider and plugin ownership](provider-plugins.md).
 
+## Session Model Routing Override
+
+A session override keys on agent ID, session ID and the resolved logical model.
+The gateway looks it up after its usual model mapping. A routing group uses
+`group/<id>`, with former group IDs accepted after a rename. A direct model
+uses the resolved `<provider>/<model>`. The selected provider must already
+be part of the route. For a Codex child, the gateway checks its own thread
+first, then an explicitly identified parent, for the model the child will
+use. A regular Codex session can match its recorded `X-Magpie-Session` ID.
+User-created forks use their own Codex thread.
+
+The gateway checks the candidate plan for Gateway Key and group permissions,
+account pins, media and context-window requirements, sealed subagent messages
+and native compaction. When ordinary Responses reasoning carries ciphertext,
+a matching recent writer account is required before applying an override.
+Without that evidence, Prefer uses the ordinary route and Strict refuses.
+The existing sealed task reader and checkpoint checks still apply, including
+the fork's compatibility settings below.
+
+An eligible override relaxes strict automatic affinity into a preference for
+the previous account. Rules still run and supply their parameters. Prefer
+moves eligible seats of the target provider ahead of the other seats and
+keeps the other seats in their existing order. Learned context overflows,
+rests, account availability and lane scheduling can still affect which
+candidate gets a try. Strict limits the primary plan and retry sources to
+eligible seats of the target provider. A checkpoint or caller account pin
+can limit that to one seat.
+
+Route Trace records the requested provider, model, mode, parent, outcome and
+actual provider. A subagent request that doesn't identify its parent also
+leaves a note in the trace. Native Codex passthrough can only use the
+sign-in or checkpoint writer that owns that route. A Strict override there
+prevents handing the call to the ordinary fallback route.
+
+The hot path reads the existing configuration from an in-memory index. GUI
+mutations write a private snapshot to
+`session-routing-overrides.json` in Magpie's configuration directory.
+The new snapshot is published after a successful atomic rename, so requests
+already routing keep their decision and new requests see the saved change.
+
+Implementation starts in
+[`internal/gateway/session_routing.go`](../../internal/gateway/session_routing.go).
+When merging upstream, review the hooks in
+[`gateway.go`](../../internal/gateway/gateway.go) and
+[`codex_backend.go`](../../internal/gateway/codex_backend.go), especially new
+candidate sources, retries, account restrictions and native passthrough.
+The storage and GUI management handlers live in
+[`internal/sessionrouting`](../../internal/sessionrouting) and
+[`internal/gui/session_routing.go`](../../internal/gui/session_routing.go).
+
 ## Fork's sealed Codex handoffs
 
 In this fork, `sameSealingBackend` allows a sealed task between Responses

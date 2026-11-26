@@ -46,6 +46,8 @@ type ModelMove struct {
 }
 
 type Route struct {
+	SessionOverride     *SessionOverrideTrace `json:"sessionOverride,omitempty"`
+	SessionOverrideNote string                `json:"sessionOverrideNote,omitempty"`
 	// CallerKey: the gateway key the request came with, by its id and the
 	// name it had then, never its secret: a key held to a budget, models
 	// or accounts is told the routes of its own requests alone

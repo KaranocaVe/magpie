@@ -73,6 +73,11 @@ function server(lang, theme, asked) {
     }
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], models: [], gateway: { running: false } });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme }, fx: { rate: 7.2, at: new Date().toISOString() } });
+    if (url.pathname === "/api/session-routing/trace") {
+      if (url.searchParams.get("id") !== "123" || url.searchParams.get("day") !== ROWS[0].t.slice(0, 10)) return json({});
+      return json({ override: { session: "child", model: "group/sol", provider: "preferred", mode: "prefer",
+        result: "fallback", inheritedFrom: "parent", reason: "provider unavailable", actualProvider: "relay" } });
+    }
     if (url.pathname === "/api/usage/requests") {
       asked.push(url.searchParams);
       return json(page(url.searchParams));
@@ -359,7 +364,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const row = page.locator(".led tbody tr").first();
         await wheelTo(page, row);
         const left = await scrolled(page);
-        const link = (await reader.openRequest(page, row)).getByText(routeTitle, { exact: true });
+        const detail = await reader.openRequest(page, row);
+        const override = detail.locator(".led-session-override");
+        await override.waitFor();
+        assert.match(await override.textContent(), /preferred/);
+        assert.match(await detail.textContent(), /child · group\/sol/);
+        assert.match(await detail.textContent(), /parent/);
+        assert.match(await detail.textContent(), lang === "en" ? /Fell back/ : /已回退/);
+        const link = detail.getByText(routeTitle, { exact: true });
         await link.click();
         await page.locator("#view-routing").waitFor({ state: "visible" });
         await page.locator(".rt-log-head").getByText(usageTitle, { exact: true }).waitFor();

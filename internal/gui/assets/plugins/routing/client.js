@@ -23,6 +23,7 @@ magpie.plugin("routing", (ctx) => {
     <div class="row-head"><span class="label" data-t>Routing</span><span class="rt-livedot" aria-hidden="true"></span><span class="note" data-t>live, as the gateway decides</span><span class="grow"></span>
       <button class="text rt-togroups" type="button" id="rtToGroups" data-feature="groups"><span data-t>Routing groups</span> ›</button>
       <button class="text rt-toset" type="button" id="rtToSet"><span data-t>Settings</span> ›</button>
+      <button class="text rt-to-session-overrides" type="button" id="rtToSessionOverrides"><span data-t>Session overrides</span> ›</button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
     <section class="rt" id="rt"></section>
     <div class="rt-more" id="rtMore"></div>
@@ -53,11 +54,85 @@ magpie.plugin("routing", (ctx) => {
 function routingPage(part) {
   const box = $("#rt");
   if (!box) return;
+  const overridePanel = el("section", "rt-session-overrides");
+  overridePanel.hidden = true;
+  const overrideHead = el("div", "row-head");
+  overrideHead.append(el("span", "label", t("Session overrides")), el("span", "note", t("Explicit model preferences by session")), el("span", "grow"));
+  const overrideSearch = el("input", "rt-session-search");
+  overrideSearch.type = "search";
+  overrideSearch.setAttribute("aria-label", t("Search sessions, models or providers"));
+  overrideSearch.placeholder = t("Search sessions, models or providers");
+  overrideHead.append(overrideSearch);
+  const overrideList = el("div", "list rt-session-list");
+  overridePanel.append(overrideHead, overrideList);
+  box.parentElement.insertBefore(overridePanel, box);
+  let overrideState = [], overrideLoading = false, overrideError = "";
+  const loadOverrides = async () => {
+    if (overrideLoading) return;
+    overrideLoading = true;
+    try {
+      const o = await api("session-routing");
+      overrideState = o?.overrides || [];
+      overrideError = "";
+    } catch (e) { overrideError = e.message; }
+    finally { overrideLoading = false; renderOverrides(); }
+  };
+  const renderOverrides = () => {
+    const q = (overrideSearch.value || "").trim().toLowerCase();
+    overrideList.replaceChildren();
+    if (overrideError) { overrideList.append(el("p", "usage-note", overrideError)); return; }
+    const rows = overrideState.filter((x) => !q || [x.title, x.agent, x.session, x.model, x.provider, x.mode, x.reason].some((v) => String(v || "").toLowerCase().includes(q)));
+    if (!rows.length) { overrideList.append(el("p", "usage-note", q ? t("No matching session overrides") : t("No session overrides configured"))); return; }
+    for (const item of rows) {
+      const row = el("div", "row rt-session-row");
+      const words = el("div", "rt-session-words");
+      words.append(el("span", "name", item.model), el("span", "sub", [item.title, item.agent, item.session, item.provider, item.mode === "strict" ? t("Strict") : t("Prefer")].filter(Boolean).join(" · ")));
+      if (item.valid === false) words.append(el("span", "rt-session-invalid", item.reason ? t(item.reason) : t("Provider unavailable")));
+      const edit = el("button", "text", t("Edit")); edit.type = "button";
+      const del = el("button", "text danger", t("Delete")); del.type = "button";
+      edit.onclick = () => row.replaceWith(overrideEditor(item, renderOverrides));
+      del.onclick = async () => { del.disabled = true; try { await api("session-routing", { action: "delete", agent: item.agent, session: item.session, model: item.model }); await loadOverrides(); status(t("Routing override deleted"), "ok"); } catch (e) { status(e.message, "err"); del.disabled = false; } };
+      row.append(words, el("span", "grow"));
+      if (!featuresOff.has("sessions")) {
+        const open = el("button", "text rt-session-open", t("Open in Sessions"));
+        open.type = "button";
+        open.onclick = (e) => magpie.call("sessions", "reveal", { agent: item.agent, id: item.session }, e);
+        row.append(open);
+      }
+      row.append(edit, del);
+      overrideList.append(row);
+    }
+  };
+  const overrideEditor = (item, redraw) => {
+    const row = el("div", "rt-session-editor");
+    const model = el("span", "name", item.model);
+    const provider = el("input"); provider.value = item.provider || ""; provider.placeholder = t("Provider ID");
+    const mode = el("select");
+    for (const [id, name] of [["prefer", t("Prefer")], ["strict", t("Strict")]]) { const o = el("option", "", name); o.value = id; mode.append(o); }
+    mode.value = item.mode || "prefer";
+    const save = el("button", "text", t("Save")); save.type = "button";
+    const cancel = el("button", "text", t("Cancel")); cancel.type = "button";
+    save.onclick = async () => { save.disabled = true; try { await api("session-routing", { action: "set", agent: item.agent, session: item.session, model: item.model, provider: provider.value.trim(), mode: mode.value }); await loadOverrides(); status(t("Routing override saved"), "ok"); } catch (e) { status(e.message, "err"); save.disabled = false; } };
+    cancel.onclick = redraw;
+    row.append(el("span", "rt-session-id", item.agent + " · " + item.session), model, provider, mode, save, cancel);
+    return row;
+  };
+  overrideSearch.oninput = renderOverrides;
+  renderOverrides();
   // the groups' way in where the header's row has no tab for them (markNav)
   const toGroups = $("#rtToGroups");
   if (toGroups) toGroups.onclick = async () => { if (await window.show("groups")) openedFrom(toGroups); };
   // what routing does when an account refuses or every one rests, and a
   // busy model's place, are set in Settings › Models › Routing
+  const toSessionOverrides = $("#rtToSessionOverrides");
+  if (toSessionOverrides) {
+    toSessionOverrides.setAttribute("aria-expanded", "false");
+    toSessionOverrides.onclick = () => {
+      overridePanel.hidden = !overridePanel.hidden;
+      toSessionOverrides.setAttribute("aria-expanded", String(!overridePanel.hidden));
+      if (!overridePanel.hidden) { overrideSearch.focus({ preventScroll: true }); loadOverrides(); }
+    };
+  }
   const toSet = $("#rtToSet");
   if (toSet) toSet.onclick = (e) => openSettingsAt(e, "models", "#routeList .row");
   const NS = "http://www.w3.org/2000/svg";
@@ -3842,6 +3917,20 @@ function routingPage(part) {
       : main && main.model !== r.model && wentOn(r) === r.model
       ? t("{agent} asked for {model}: {name} serves it, and the vendor is asked for {sent}", { agent: agentName(r.agent), model: r.model, name: main.name, sent: main.model })
       : t("{agent} asked for {model}", { agent: agentName(r.agent), model: r.model }) + " → " + (main?.name || r.provider), ""]);
+    if (r.sessionOverride) {
+      const o = r.sessionOverride;
+      const bits = [o.mode === "strict" ? t("Strict session override") : t("Preferred session override")];
+      if (o.session && o.model) bits.push(o.session + " · " + o.model);
+      if (o.provider) bits.push(t("provider {provider}", { provider: o.provider }));
+      if (o.inheritedFrom) bits.push(t("inherited from {session}", { session: o.inheritedFrom }));
+      if (o.result === "fallback") bits.push(t("fell back: {reason}", { reason: o.reason || t("provider unavailable") }));
+      else if (o.result === "rejected" || o.result === "skipped") bits.push(t("rejected: {reason}", { reason: o.reason || t("hard constraint") }));
+      else if (o.result === "applied") bits.push(t("applied"));
+      else if (o.result === "unresolved") bits.push(t(o.reason));
+      if (o.actualProvider && o.actualProvider !== o.provider) bits.push(t("used {provider}", { provider: o.actualProvider }));
+      items.push([bits.join(" · "), "aside session-override"]);
+    }
+    if (r.sessionOverrideNote) items.push([t(r.sessionOverrideNote), "aside session-override-note"]);
     if (tagKind(r)) items.push([kindWhy(r), "aside kind"]);
     else if (r.subagent) items.push([subagentWhy(r), "aside"]);
     if (movedSays(r)) items.push([movedWhy(r), tagKind(r) ? "aside" : "aside stood"]);

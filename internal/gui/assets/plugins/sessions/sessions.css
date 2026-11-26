@@ -246,3 +246,23 @@ body.window .row.sm-sub-row { min-height: 42px; padding-left: calc(14px + var(--
 @media (hover: hover) and (pointer: fine) { .sess-nav:not(:disabled):hover { background: var(--pill); color: var(--fg); } }
 .sess-nav:not(:disabled):active { transform: scale(.97); }
 @media (max-width: 560px) { .sess-turns { display: none; } }
+
+/* Session Model Routing Override editor. */
+.sm-routing-overrides { margin: 10px 0 4px; padding: 10px 11px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--bg); }
+.sm-routing-head { min-height: 28px; padding: 0; }
+.sm-routing-head .note { margin-left: 8px; }
+.sm-routing-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.sm-routing-item { min-height: 38px; padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--card); }
+.sm-routing-words { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sm-routing-words .name { font-family: var(--code-font, var(--code)); font-size: 12px; }
+.sm-routing-words .sub { font-size: 11px; color: var(--muted); }
+.sm-routing-invalid { color: var(--red); font-size: 11px; }
+.sm-routing-editor { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) 100px auto auto; align-items: end; gap: 7px; padding: 8px; border: 1px solid var(--accent-soft); border-radius: 7px; background: var(--card); }
+.sm-routing-field { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sm-routing-field .k { font-size: 10.5px; color: var(--muted); }
+.sm-routing-field select { min-width: 0; width: 100%; }
+.sm-routing-clear { align-self: flex-start; margin-top: 2px; }
+@media (max-width: 620px) {
+  .sm-routing-editor { grid-template-columns: 1fr 1fr; }
+  .sm-routing-editor .sm-routing-field:first-child { grid-column: 1 / -1; }
+}

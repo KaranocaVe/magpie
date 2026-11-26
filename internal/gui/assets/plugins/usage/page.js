@@ -2303,6 +2303,22 @@ function ledDetail(r) {
   // the provider an aggregator (OpenRouter …) said answered behind it
   add("Upstream provider", r.upstream);
   add("Session ID", r.session);
+  if (r.route_id && !r.computer) {
+    const q = new URLSearchParams({ id: r.route_id, day: r.t.slice(0, 10) });
+    api("session-routing/trace?" + q).then(({ override, note }) => {
+      if (!dl.isConnected) return;
+      if (override) {
+        const outcomes = { applied: "Applied", fallback: "Fell back", skipped: "Skipped", rejected: "Rejected" };
+        add("Session routing override", t(override.mode === "strict" ? "Strict" : "Prefer") + " · " + override.provider, "led-session-override");
+        add("Override session and model", [override.session, override.model].filter(Boolean).join(" · "));
+        add("Inherited from", override.inheritedFrom);
+        add("Override result", [outcomes[override.result] && t(outcomes[override.result]), override.reason && t(override.reason)].filter(Boolean).join(" · "));
+        add("Actual provider", override.actualProvider);
+      }
+      if (note) add("Session routing override", t(note), "led-session-override");
+    }).catch(() => {});
+  }
+
   // a call that isn't a turn of the conversation says what it was for, as
   // the agent named it: a subagent's, a title, an approval check… — a
   // model the conversation never picked reads as what it is (#714)

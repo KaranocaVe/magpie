@@ -701,8 +701,12 @@ func stickKey(scope string, in http.Header, body []byte) string {
 // more for each 4 MB Codex request in flight. inOrder: the request is to
 // a routing group, or a provider's keys or accounts, set to In order,
 // whose order the user chose (backToFirst).
-func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned) ([]candidate, planned, *Affinity, string) {
-	key := stickKey(scope, in, body)
+func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http.Header, from provider.Protocol, body, written []byte, cs []candidate, pl planned, overrides ...*SessionOverrideTrace) ([]candidate, planned, *Affinity, string) {
+	var override *SessionOverrideTrace
+	if len(overrides) != 0 {
+		override = overrides[0]
+	}
+	key := override.affinityKey(scope, in, body)
 	a := &Affinity{Mode: mode}
 	a.Turn, a.Within = turnOf(from, written)
 	var st stick

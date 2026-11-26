@@ -2920,6 +2920,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		withBodies(&rec, &call)
 		appendUsage(r, rec)
 	}
+	var sessionOverride *SessionOverrideTrace
 	// a request turned away before any provider was asked is in the log
 	// as the failure it was, with the reason
 	turnedAway := func() {
@@ -2929,6 +2930,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		finishCapture()
 		call.Millis = time.Since(start).Milliseconds()
+		s.traceSessionRejection(r, sessionOverride, &call, start)
 		s.record(call)
 		logged()
 	}
@@ -3094,6 +3096,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 	}
 	p, model, ok := provider.Resolve(asked)
+	g, ms, isGroup := provider.FindGroup(asked)
+	sessionOverride = sessionOverrideFor(r, cmp.Or(call.Agent, agent), call.Kind, sessionLogicalModel(asked, p, model, g), metadata, g.Former...)
 	// a model the user disabled (#1867) — asked by its id, the model a
 	// sub-agent was put on, a group with every model in it disabled — is
 	// refused here, before anything is sent anywhere; a group with one
@@ -3150,7 +3154,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}
 	// a routing group's rules pick the member that goes first, looked at
 	// before any image is taken out of the request: one may be for images
-	g, ms, isGroup := provider.FindGroup(asked)
 	g = g.Live() // a manual group's rules wait
 	// routed as the calling key says, where it says (justforlxz on X)
 	g = keyRouted(access.Caller(r.Context()), g)
@@ -3186,6 +3189,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				g = keyRouted(access.Caller(r.Context()), g.Live())
 				sentWhole = true
 				move(to, movedPrivacy)
+				if sessionOverride != nil {
+					sessionOverride.skipped("privacy routing requires a different logical model")
+					if sessionOverride.strict() {
+						call.Status, call.Error = 403, sessionOverride.refusal(sessionOverride.Reason)
+						writeError(w, from, call.Status, call.Error)
+						turnedAway()
+						return
+					}
+				}
 			} else {
 				capture.ResponseWriter, body, unmask, maskedHits = rw, b, done, hits
 				r = withMaskedAs(r, ownMaskedAs(r.Context()))
@@ -3508,14 +3520,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 	}
 	agentPick := provider.AgentEffort(agent)
+	var overrideConstraint string
 	if sealedTask {
+		hadTarget := sessionOverride != nil && sessionOverride.has(cands)
 		cands, pl = s.sealedReaders(cands, pl, sealers)
+		if hadTarget && !sessionOverride.has(cands) {
+			overrideConstraint = "provider cannot read the sealed subagent message"
+		}
 	}
 	// a compaction a provider set to compact natively sealed goes only to
 	// the key or account that sealed it, or is refused saying so: never
 	// to another, to be refused, dropped or summarised (#1099). Codex's
 	// trigger goes only where it can be asked as Codex sent it.
 	var checkpoint *checkpointWriter
+	beforeCompaction := sessionOverride != nil && sessionOverride.has(cands)
 	if from == provider.Responses {
 		if cp, ok := checkpointOf(body); ok {
 			checkpoint = &cp
@@ -3565,6 +3583,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 		}
 	}
+	if beforeCompaction && !sessionOverride.has(cands) {
+		overrideConstraint = "provider cannot carry or read native compaction"
+	}
 	var accountHeld bool // every candidate was an account or key the calling key may not use
 	if keyHeld || accHeld {
 		who := keyWho
@@ -3578,8 +3599,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		} else if isGroup {
 			members = groupKeeps(keyWho, g, ms)
 		}
+		hadTarget := sessionOverride != nil && sessionOverride.has(cands)
 		spent, anySpent := spentAmong(keyWho, cands)
 		cands, pl, accountHeld = allowedCandidates(who, cands, pl, members)
+		if hadTarget && !sessionOverride.has(cands) {
+			overrideConstraint = "gateway key or routing group permissions exclude the provider"
+		}
 		if len(cands) == 0 && anySpent {
 			// every model left is one a spent limit of the key's counts
 			// (zola_xynb): said as the limit, not as a model gone
@@ -3594,7 +3619,56 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// account past the usage cap set on it, and is refused there, not
 	// moved, while the account is held as it won't spend its credits
 	// (#1797)
-	cands, pl, strictHeld := strictKeep(scope, mode, r.Header, body, plain, cands, pl)
+	pin := strings.TrimSpace(r.Header.Get(AccountHeader))
+	preference := sessionOverride
+	if preference != nil && preference.Reason != "" {
+		preference = nil
+	}
+	if preference != nil && overrideConstraint == "" && !preference.compatibleReasoning(scope, r.Header, from, plain, checkpoint, cands) {
+		overrideConstraint = "provider cannot be shown to read the conversation's encrypted reasoning"
+	}
+	// A vision rule may choose a vision model even when the group has
+	// text-only fallbacks. A failure must not send a current user image to
+	// one of them. Historical images and tool results are omitted per
+	// candidate below, so a text-only fallback can still answer those.
+	// With a model to describe them, a text-only member is given the images
+	// described instead.
+	// Described only when such a member is tried: a rule that sends the
+	// images to a model that sees asks for no description.
+	var seenGroup func() ([]byte, error)
+	// groupUnknown is whether the member the images are first described
+	// for is counted text-only for knowing nothing of it (CallFor.Unknown)
+	groupUnknown := false
+	if isGroup && hasImage(from, body) {
+		if see, ok := seeing(); ok {
+			seenGroup = sync.OnceValues(func() ([]byte, error) {
+				return s.seenBody(withDescribeFor(r.Context(), call.Agent, call.Model, sessionOf(r.Header), groupUnknown), from, body, see)
+			})
+		}
+	}
+	if preference != nil && overrideConstraint == "" && preference.has(cands) {
+		overrideConstraint = s.overrideEligibility(preference, cands, pl, isGroup, from, body, seenGroup != nil, pin)
+	}
+	if preference != nil && (overrideConstraint != "" || !preference.has(cands) &&
+		!(preference.strict() && preference.has(pl.held) && pin == "")) {
+		status, reason := sessionOverrideUnavailable(preference, pl, overrideConstraint)
+		if preference.strict() {
+			call.Status, call.Error = status, preference.refusal(reason)
+			writeError(w, from, status, call.Error)
+			turnedAway()
+			return
+		}
+		preference.unavailable(status, reason)
+		preference = nil
+	}
+	if preference.strict() && !preference.has(cands) {
+		// Only this provider's held accounts may spend a reset.
+		cands, pl = preference.restrict(cands, pl)
+	}
+	var strictHeld []Weighed
+	if preference == nil {
+		cands, pl, strictHeld = strictKeep(scope, mode, r.Header, body, plain, cands, pl)
+	}
 	// a Codex reset spent before any try, on an account held as it won't
 	// spend its credits
 	var resetFirst *AutoReset
@@ -3638,6 +3712,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
 		}
 		call.Status, call.Error = 429, record
+		if preference.strict() {
+			msg = preference.refusal(msg)
+		}
 		writeError(w, from, 429, msg)
 		turnedAway()
 		return
@@ -3672,7 +3749,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}
 	if len(cands) == 0 {
 		call.Status, call.Error = 404, "no member ready"
-		writeError(w, from, 404, fmt.Sprintf("none of %s's models is ready", call.Model))
+		msg := fmt.Sprintf("none of %s's models is ready", call.Model)
+		if preference.strict() {
+			call.Status, call.Error = sessionOverrideUnavailable(preference, pl, "")
+			msg = preference.refusal(call.Error)
+		}
+		writeError(w, from, call.Status, msg)
 		turnedAway()
 		return
 	}
@@ -3687,7 +3769,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if isGroup {
 		inOrder = routingOf(g.Routing) == provider.Ordered
 	}
-	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, hit != nil && hit.Ended > 0, r.Header, from, body, plain, cands, pl)
+	// Strict affinity normally removes every other seat. A session override
+	// keeps affinity as an ordering preference so the requested provider
+	// and its other accounts remain eligible.
+	if preference != nil && mode == provider.AffinityStrict {
+		mode = provider.AffinitySession
+	}
+	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, hit != nil && hit.Ended > 0, r.Header, from, body, plain, cands, pl, preference)
 	// a strict conversation left with its own account of several: its
 	// failure rests the account as it would with the others still there,
 	// for new conversations to go elsewhere meanwhile (#1797)
@@ -3707,10 +3795,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// the rule's member, the member's others behind it (#1946)
 		cands, pl = ruleOver(hit, ms, cands, pl, aff)
 	}
+	if preference != nil {
+		cands, pl = preference.promote(cands, pl)
+	}
 	// the groups in the group as the rule's has them: a model it shares
 	// with a group ahead of it is its, for its rules (#2361)
 	ruled := ms
-	if led := ruleLed(hit, ms, cands); strings.HasPrefix(led, provider.GroupPrefix) {
+	if led := ruleLed(hit, ms, cands); strings.HasPrefix(led, provider.GroupPrefix) &&
+		(preference == nil || slices.ContainsFunc(membersNamed(led, ms), func(m provider.Member) bool { return ofMember(cands[0], m) })) {
 		ruled = homed(ms, []string{led})
 	}
 	// the rules of the groups in the group, down the one that goes first
@@ -3721,7 +3813,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if hit != nil {
 			picked = hit.Pick
 		}
-		nested, nestedAt, cands, pl = s.nestedRules(ruleAt, ruleReq, agent, ask, ruled, cands, pl, aff, picked)
+		nested, nestedAt, cands, pl = s.nestedRules(ruleAt, ruleReq, agent, ask, ruled, cands, pl, aff, picked, preference)
 	}
 	// the effort a group's decision model picked for the turn: the
 	// outermost group's that did
@@ -3734,81 +3826,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			effort, wanted = n.Rule.Pick, n.Rule.Wanted
 		}
 	}
-	// A vision rule may choose a vision model even when the group has
-	// text-only fallbacks. A failure must not send a current user image to
-	// one of them. Historical images and tool results are omitted per
-	// candidate below, so a text-only fallback can still answer those.
-	// With a model to describe them, a text-only member is given the images
-	// described instead.
-	// Described only when such a member is tried: a rule that sends the
-	// images to a model that sees asks for no description.
-	var seenGroup func() ([]byte, error)
-	// groupUnknown is whether the member the images are first described
-	// for is counted text-only for knowing nothing of it (CallFor.Unknown)
-	groupUnknown := false
-	if isGroup && hasImage(from, body) {
-		if see, ok := seeing(); ok {
-			seenGroup = sync.OnceValues(func() ([]byte, error) {
-				return s.seenBody(withDescribeFor(r.Context(), call.Agent, call.Model, sessionOf(r.Header), groupUnknown), from, body, see)
-			})
-		}
-	}
-	if isGroup && seenGroup == nil {
-		// without a model to describe it, a new image goes only to the
-		// members that see it (#756) — to members magpie knows nothing
-		// of when none is known to see, as a model of its own would be
-		// sent it. With one, the members keep their order, a text-only
-		// one given it described.
-		if _, currentImage := textOnlyBody(from, body); currentImage {
-			var sees, unknown []candidate
-			var seesAt, unknownAt []Weighed
-			for i, c := range cands {
-				in := membersImageInput([]provider.Member{{Provider: c.p, Model: c.model}})
-				switch {
-				case !s.blindTo(c.p.ID, c.model, in):
-					sees, seesAt = append(sees, c), append(seesAt, pl.order[i])
-				case in == nil:
-					unknown, unknownAt = append(unknown, c), append(unknownAt, pl.order[i])
-				}
-			}
-			cands, pl.order = sees, seesAt
-			if len(sees) == 0 {
-				cands, pl.order = unknown, unknownAt
-			}
-			if len(cands) == 0 {
-				call.Status, call.Error = 400, "model does not support image input"
-				writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, g.Name), noSeerNote()))
-				turnedAway()
-				return
-			}
-		}
-	}
-	if isGroup && hasCurrentVideo(from, body) {
-		// a video goes only to the members that take one, else to those
-		// magpie knows nothing of, else is turned away: a member that takes
-		// none would answer the words alone (#6135)
-		var takes, unknown []candidate
-		var takesAt, unknownAt []Weighed
-		for i, c := range cands {
-			switch v := videoInput(c.p.ID, c.model); {
-			case v == nil:
-				unknown, unknownAt = append(unknown, c), append(unknownAt, pl.order[i])
-			case *v:
-				takes, takesAt = append(takes, c), append(takesAt, pl.order[i])
-			}
-		}
-		cands, pl.order = takes, takesAt
-		if len(takes) == 0 {
-			cands, pl.order = unknown, unknownAt
-		}
-		if len(cands) == 0 {
+	if isGroup {
+		var media string
+		cands, pl, media = s.mediaCandidates(cands, pl, from, body, seenGroup != nil)
+		switch media {
+		case "image":
+			call.Status, call.Error = 400, "model does not support image input"
+			writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, g.Name), noSeerNote()))
+			turnedAway()
+			return
+		case "video":
 			call.Status, call.Error = 400, "model does not support video input"
 			writeError(w, from, 400, videoRefused(call.Model, g.Name))
 			turnedAway()
 			return
 		}
 	}
-	pin := strings.TrimSpace(r.Header.Get(AccountHeader))
 	if pin != "" {
 		var status int
 		var msg string
@@ -3816,6 +3849,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			call.Status, call.Error = status, "account pinned: "+pinnedName(pin)
 			writeError(w, from, status, msg)
 			finishCapture()
+			s.traceSessionRejection(r, sessionOverride, &call, start)
 			s.record(call)
 			return
 		}
@@ -3824,10 +3858,29 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// asked: it would only refuse it. Those left out are the last resort,
 	// once every one with room is out of its allowance (small, below)
 	cands, pl, small, smallW := roomy(cands, pl, from, body)
+	if preference != nil {
+		if !preference.has(cands) {
+			reason := "image, video, account pin or context-window requirements exclude the provider"
+			if preference.strict() {
+				call.Status, call.Error = 400, preference.refusal(reason)
+				writeError(w, from, call.Status, call.Error)
+				turnedAway()
+				return
+			}
+			preference.skipped(reason)
+			preference = nil
+		} else if preference.strict() {
+			cands, pl = preference.restrict(cands, pl)
+			small, smallW = nil, nil
+		}
+	}
 	// a member whose model refused this very conversation as too long at
 	// no more than this size is asked last: what it refused once the
 	// grown conversation is refused again, and the member that answered
 	// is asked first (#3453)
+	if preference != nil && !preference.strict() {
+		cands, pl = preference.promote(cands, pl)
+	}
 	cands, pl = behindOverflow(stuck, cands, pl, len(body))
 	// requests that came together go to as many keys or accounts as are
 	// alike for them, each counted where it goes until it ends (#5242);
@@ -3839,7 +3892,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	}
 	leastHeldIt := aff.Why == "first" && (rotate || spread)
 	reorder := !aff.Kept && aff.Why != "strict" && pin == "" && leadAccount == "" && checkpoint == nil && !leastHeldIt
-	cands, pl, unburst := burstSpread(poolRouting, poolGroup, hit != nil && hit.Use != "", reorder, cands, pl)
+	cands, pl, unburst := burstSpread(poolRouting, poolGroup, hit != nil && hit.Use != "", reorder, cands, pl, preference != nil)
 	defer unburst()
 	// of those resting, only the one back soonest is asked (#1799); the
 	// whole list still finds a Codex account to spend a reset on
@@ -3873,7 +3926,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		capture.tools = tools
 	}
 	tierAsked := bodyTier(from, body) // the service tier the client asked for (#1784)
-	tr := s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(from, plain), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, call.Agent), TitleLink: link, Pinned: pinnedName(pin), Time: start, Agent: call.Agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), LastConvs: dshLastConvs(call.Agent, body), ParentSession: titleParentSession(r.Header, metadata, call.Kind), Kind: call.Kind, For: call.For, Model: call.Model, Effort: requestEffort(from, body), Tier: tierAsked, Provider: p.ID, Group: group, Rule: hit, Nested: nested, SealedTask: sealedTask, LeadAccount: leadAccount, Compaction: compactionWho(checkpoint), Subagent: subagent, Moved: moved, SubagentEffort: subagentEffort, Sub: subOf(r.Header), SubagentID: subagentID, Affinity: shown, Order: pl.order, Left: append(slices.Clip(pl.left), smallW...)})
+	tr := s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(from, plain), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, call.Agent), TitleLink: link, Pinned: pinnedName(pin), Time: start, Agent: call.Agent, Session: sessionOf(r.Header), SessionOverride: sessionOverride.snapshot(), SessionOverrideNote: sessionOverrideNote(r.Header, call.Agent, call.Kind, metadata), Conv: convOf(r.Header, body), LastConvs: dshLastConvs(call.Agent, body), ParentSession: titleParentSession(r.Header, metadata, call.Kind), Kind: call.Kind, For: call.For, Model: call.Model, Effort: requestEffort(from, body), Tier: tierAsked, Provider: p.ID, Group: group, Rule: hit, Nested: nested, SealedTask: sealedTask, LeadAccount: leadAccount, Compaction: compactionWho(checkpoint), Subagent: subagent, Moved: moved, SubagentEffort: subagentEffort, Sub: subOf(r.Header), SubagentID: subagentID, Affinity: shown, Order: pl.order, Left: append(slices.Clip(pl.left), smallW...)})
 	if watched != nil {
 		watched.routeID = tr.ID
 	}
@@ -4038,6 +4091,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			onWay()
 		}
 	}()
+	overrideTried := false
 	for i := 0; i < len(cands); i++ {
 		if failedRow != nil {
 			failedRow()
@@ -4353,6 +4407,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 		}
 		call.Provider, call.To, call.Usage = c.p.ID, "", Usage{}
+		if sessionOverride != nil && c.p.ID == sessionOverride.Provider {
+			overrideTried = true
+		}
 		model = c.model
 		lastTried = c.p
 		where = c.p.Where()
@@ -6224,6 +6281,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	tries := 0 // the request's tries, as its route lists them
 	s.trace.update(tr, func(t *Route) {
 		t.Done, t.Status, t.Error, t.Millis = true, call.Status, call.Error, call.Millis
+		if sessionOverride != nil {
+			actual := ""
+			if len(t.Tries) != 0 {
+				actual = call.Provider
+			}
+			t.SessionOverride = sessionOverride.completed(actual, call.Error, overrideTried)
+		}
 		// the id the agent reads beside the reply, so the session that
 		// keeps it can be found after the fact (dsh's replays)
 		t.ResponseID = call.Usage.ResponseID

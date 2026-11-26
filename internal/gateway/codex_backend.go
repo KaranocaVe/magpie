@@ -1032,6 +1032,38 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	}
 	start := time.Now()
 	usage.Saw(agentOf(r))
+	var sessionOverride *SessionOverrideTrace
+	var overrideProvider string
+	if r.Method == http.MethodPost && (rest == "/responses" || rest == "/responses/compact") {
+		base := provider.CodexBase
+		if apiKey(r.Header) {
+			base = codexAPIBase
+		}
+		overrideProvider, _ = codexServed(base, r.Header, on)
+		meta := requestSessionMetadata(r.Header, body)
+		kind := requestCallKind(r.Header, meta)
+		agent := callerOf(r).agent
+		model := modelOf(body)
+		sessionOverride = sessionOverrideFor(r, agent, kind, overrideProvider+"/"+model, meta)
+		if sessionOverride == nil && overrideProvider == "openai" && base == provider.CodexBase {
+			// The native sign-in can be outside Magpie's account pool. A
+			// rule for the pooled model cannot silently select this path.
+			sessionOverride = sessionOverrideFor(r, agent, kind, "codex/"+model, meta)
+		}
+		if sessionOverride != nil && overrideProvider != sessionOverride.Provider {
+			reason := "Codex's native sign-in or checkpoint writer is the only candidate on this route"
+			sessionOverride.skipped(reason)
+			if sessionOverride.strict() {
+				call := Call{Time: start, From: provider.Responses, Agent: agent, Kind: kind, Model: model, Status: 400, Error: sessionOverride.refusal(reason)}
+				s.recordNativeSessionRefusal(r, sessionOverride, call)
+				writeError(w, provider.Responses, call.Status, call.Error)
+				return
+			}
+		}
+	}
+	fallsBack := func(body []byte) bool {
+		return !sessionOverride.strict() && s.codexFallsBack(r, body)
+	}
 	// Codex's own turns come here from the mux, not through serve: the
 	// row written below sums this call's tries in its own context (#4456)
 	r = r.WithContext(s.countBytes(r.Context()))
@@ -1049,7 +1081,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	if r.Method == http.MethodPost && (rest == "/responses" || rest == "/responses/compact") {
 		holdKey = codexHoldKey(base, on)
 		if h, ok := codexHeld(holdKey, start); ok {
-			if rest == "/responses" && base == provider.CodexBase && on == nil && s.codexFallsBack(r, body0) {
+			if rest == "/responses" && base == provider.CodexBase && on == nil && fallsBack(body0) {
 				// Codex's own sign-in held, and somewhere for the turn to
 				// go on to: the fallbacks answer, as they did the refusal
 				// that held it, not Codex handed that refusal again while
@@ -1058,7 +1090,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				s.codexFallBack(w0, r, body0, &keptAlive{proto: provider.Responses, told: start, streams: streamOf(body0)})
 				return
 			}
-			s.writeCodexHeld(w, r, h, base, on, modelOf(body), start)
+			s.writeCodexHeld(w, r, h, base, on, modelOf(body), start, sessionOverride)
 			return
 		}
 	}
@@ -1166,7 +1198,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			user = on.Account.User
 		}
 		window := cmp.Or(provider.CodexWindow(user, model), catalog.ContextOf(model))
-		tr = s.trace.beginFor(r, Route{turn: turn, window: window, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: callerOf(r).agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: tier, Provider: "openai", Subagent: subagentPickOf(r),
+		tr = s.trace.beginFor(r, Route{turn: turn, window: window, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: callerOf(r).agent, Session: sessionOf(r.Header), SessionOverride: sessionOverride.snapshot(), SessionOverrideNote: sessionOverrideNote(r.Header, callerOf(r).agent, kind, metadata), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: tier, Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Tier: tier, Start: start}}})
 		noteChecked(r, sentWhole, maskedHits)
 		if m := noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), tr.ID, "openai", model); m != nil {
@@ -1207,6 +1239,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				t.ReasoningHidden = first.hidesReasoning(provider.Responses, uu.Reasoning)
 				try.ReasoningHidden = t.ReasoningHidden
 				t.Done, t.Status, t.Error, t.Millis, t.Tokens = true, status, msg, ms, tokens
+				t.SessionOverride = sessionOverride.completed(overrideProvider, msg, true)
 				if t.TitleLink != nil && isTitleKind(kind) && status < 400 && msg == "" && !titleReply.truncated {
 					link := *t.TitleLink
 					link.Reply = replyDigest
@@ -1517,7 +1550,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// its credits and resets looked at above, a 429 that names
 			// when the account is back holds it till then (codexHolds)
 			noteCodexHold(holdKey, res.StatusCode, res.Header, msg, relayOnCredits(on))
-			if overload && codexBusy(res.StatusCode, msg) && s.codexFallsBack(r, body) {
+			if overload && codexBusy(res.StatusCode, msg) && fallsBack(body) {
 				// still too busy once asked again: the fallbacks answer
 				said := provider.APIError(msg, res.Status)
 				handOn(res.StatusCode, said, 0)
@@ -1525,7 +1558,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				s.codexFallBack(w0, r, body0, kept)
 				return
 			}
-			if overload && codexAccountOut(res.StatusCode, msg) && s.codexFallsBack(r, body) {
+			if overload && codexAccountOut(res.StatusCode, msg) && fallsBack(body) {
 				// the account out of its allowance (its credits and resets
 				// looked at above): the fallbacks answer, as they do for a
 				// turn through magpie's accounts, rather than Codex handed
@@ -1555,7 +1588,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		// come, an error before them held for the turn to be asked again
 		out := w
 		var hw *holdWriter
-		if overload && streams && (busyAgain < lastRetries || kept.sent || s.codexFallsBack(r, body)) {
+		if overload && streams && (busyAgain < lastRetries || kept.sent || fallsBack(body)) {
 			hw = newHoldWriter(w, true)
 			hw.alive, hw.streams, hw.ctx, hw.stop = kept, true, r.Context(), cancel
 			// reasoning goes to Codex at once, as it always went
@@ -1637,7 +1670,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				}
 				continue
 			}
-			if s.codexFallsBack(r, body) {
+			if fallsBack(body) {
 				res.Body.Close()
 				handOn(hw.failure, said, 0)
 				end(hw.failure, said, 0, 0)
@@ -1645,7 +1678,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				return
 			}
 		}
-		if hw.mayAskAgain() && hw.failure != 0 && !hw.refused && codexAccountOut(hw.failure, hw.errBody()) && r.Context().Err() == nil && s.codexFallsBack(r, body) {
+		if hw.mayAskAgain() && hw.failure != 0 && !hw.refused && codexAccountOut(hw.failure, hw.errBody()) && r.Context().Err() == nil && fallsBack(body) {
 			// the account out of its allowance, said on its stream before
 			// any of the reply: the fallbacks answer
 			said := "OpenAI: " + string(hw.errBody())

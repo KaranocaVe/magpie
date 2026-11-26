@@ -570,7 +570,7 @@ func keepsEffort(tr turnRule, pick string, tokens int, now time.Time) bool {
 // their own key (at, the group's, and the group's way down), asking ask
 // of the message as the group's own rules do. It gives what each decided
 // and their keys.
-func (s *Server) nestedRules(at string, req *Request, agent string, ask classifier, ms []provider.Member, cands []candidate, pl planned, aff *Affinity, picked string) ([]NestedRule, []string, []candidate, planned) {
+func (s *Server) nestedRules(at string, req *Request, agent string, ask classifier, ms []provider.Member, cands []candidate, pl planned, aff *Affinity, picked string, overrides ...*SessionOverrideTrace) ([]NestedRule, []string, []candidate, planned) {
 	var out []NestedRule
 	var keys []string
 	for depth := 0; ; depth++ { // as deep as the one going first is
@@ -603,7 +603,15 @@ func (s *Server) nestedRules(at string, req *Request, agent string, ask classifi
 			continue
 		}
 		cands, pl = ruleOver(h, subMs, cands, pl, aff)
-		if led := ruleLed(h, subMs, cands); strings.HasPrefix(led, provider.GroupPrefix) {
+		var override *SessionOverrideTrace
+		if len(overrides) > 0 {
+			override = overrides[0]
+		}
+		if override != nil {
+			cands, pl = override.promote(cands, pl)
+		}
+		if led := ruleLed(h, subMs, cands); strings.HasPrefix(led, provider.GroupPrefix) &&
+			(override == nil || slices.ContainsFunc(membersNamed(led, subMs), func(m provider.Member) bool { return ofMember(cands[0], m) })) {
 			// further down, the way the group it chose has its models
 			ms = homed(ms, append(slices.Clone(lead.Path[:depth+1]), led))
 		}

@@ -29,7 +29,7 @@ var inFlight = struct {
 // the request ends. reorder false counts it where it is: a conversation
 // kept on its account, a request pinned to one, a new conversation that
 // leastHeld spread. sameMember keeps a group's rule's member first.
-func burstSpread(routing string, g *provider.Group, sameMember, reorder bool, cs []candidate, pl planned) ([]candidate, planned, func()) {
+func burstSpread(routing string, g *provider.Group, sameMember, reorder bool, cs []candidate, pl planned, sameProvider ...bool) ([]candidate, planned, func()) {
 	if len(cs) == 0 {
 		return cs, pl, func() {}
 	}
@@ -38,6 +38,9 @@ func burstSpread(routing string, g *provider.Group, sameMember, reorder bool, cs
 	if reorder && len(cs) > 1 && len(pl.order) >= len(cs) {
 		best := 0
 		for i := 1; i < len(cs); i++ {
+			if len(sameProvider) > 0 && sameProvider[0] && cs[i].p.ID != cs[0].p.ID {
+				continue
+			}
 			if burstAlike(routing, g, sameMember, cs, pl.order, i) && inFlight.m[cs[i].who()] < inFlight.m[cs[best].who()] {
 				best = i
 			}

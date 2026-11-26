@@ -1,5 +1,29 @@
 # Gateway Session Aggregation
 
+## Set a session's routing override
+
+Open **Sessions**, expand a local or gateway-observed session, and select
+**Add model override** under **Routing Overrides**. Pick the logical model or
+routing group and a provider. The model list includes models the session
+has yet to use. **Prefer** tries the provider first when its seats are
+eligible and keeps normal fallback. **Strict** requires the provider and
+keeps its eligible keys and accounts available for retry. Models without a
+matching override follow the existing route.
+
+Changes take effect on later requests as soon as they are saved and persist
+across restarts. Use **Routing → Session Overrides** to find and edit overrides
+by session, model or provider. A removed provider stays in the list with its
+status so it can be replaced or deleted. Open a **Requests** entry or its
+routing trace to see the requested provider, the actual provider and any
+reason the override was skipped or refused.
+
+Codex subagents can inherit their parent's override for the model they
+actually use when the request supplies a parent ID. A match on the child's
+own thread takes precedence. A fork is a separate session.
+For the routing order and compatibility checks, see
+[Gateway routing and fallback](gateway-routing.md#session-model-routing-override).
+
+
 The Sessions API combines file-backed native sessions with a read-only
 projection of gateway usage records. A gateway session identity is exactly
 `AgentOf(record.Agent) + record.Session`, where the session is the one the
